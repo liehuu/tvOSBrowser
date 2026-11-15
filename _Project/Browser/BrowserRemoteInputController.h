@@ -25,6 +25,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Select outside fullscreen: returns YES when the cursor sits on a video and playback was toggled,
 // so the press is consumed instead of also clicking the page underneath.
 - (BOOL)browserRemoteInputControllerTogglePlaybackAtCursorPoint;
+// build-16: scroll the innermost scrollable container under the cursor (episode lists,
+// playlists, side panels). Returns YES when an inner container or a delegated iframe moved,
+// so the document-level UIScrollView is not scrolled at the same time.
+- (BOOL)browserRemoteInputControllerScrollInnerContainerByDelta:(CGPoint)delta;
 - (void)browserRemoteInputControllerHandlePseudoFullscreenPress;
 - (void)browserRemoteInputControllerHandleFavoritesPress;
 - (BOOL)browserRemoteInputControllerPseudoFullscreenActive;
