@@ -50,16 +50,9 @@ static NSUInteger const kBrowserURLCacheDiskCapacity = 256 * 1024 * 1024;
     NSLog(@"[Cache] shared URL cache configured memory=%lu disk=%lu",
           (unsigned long)kBrowserURLCacheMemoryCapacity,
           (unsigned long)kBrowserURLCacheDiskCapacity);
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"MobileMode"]) {
-        [[NSUserDefaults standardUserDefaults] setObject:BrowserPreferencesStore.mobileUserAgent forKey:@"UserAgent"];
-        [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"MobileMode"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-    }
-    else {
-        [[NSUserDefaults standardUserDefaults] setObject:BrowserPreferencesStore.desktopUserAgent forKey:@"UserAgent"];
-        [[NSUserDefaults standardUserDefaults] setBool:NO forKey:@"MobileMode"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-    }
+    // build-16: honour the three-state UA mode (desktop Safari / mobile Safari / desktop Chrome)
+    // instead of unconditionally rewriting the UA as desktop or mobile Safari.
+    [[BrowserPreferencesStore new] applyUserAgentForCurrentMode];
     [self restoreCookiesFromDefaults];
 	return YES;
 }
