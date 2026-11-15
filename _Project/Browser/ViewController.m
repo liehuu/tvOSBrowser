@@ -349,11 +349,11 @@ static UIColor *kTextColor(void) {
             break;
         case BrowserTopBarActionFullscreen:
             if (self.viewModel.topNavigationBarVisible) {
-                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Hide Top Navigation bar?"
-                                                                                         message:@"You can still open the side menu by double-tapping the Play/Pause button."
+                UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"隐藏顶部导航栏？"
+                                                                                         message:@"仍可双击 Play/Pause 键打开侧边菜单。"
                                                                                   preferredStyle:UIAlertControllerStyleAlert];
-                [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-                [alertController addAction:[UIAlertAction actionWithTitle:@"Hide Bar"
+                [alertController addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+                [alertController addAction:[UIAlertAction actionWithTitle:@"隐藏顶栏"
                                                                     style:UIAlertActionStyleDestructive
                                                                   handler:^(__unused UIAlertAction *action) {
                     [self browserHideTopNav];
@@ -414,19 +414,19 @@ static UIColor *kTextColor(void) {
 }
 
 - (void)showInputURLorSearchGoogle {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Enter URL or Search Terms"
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"输入网址或搜索词"
                                                                              message:@""
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.keyboardType = UIKeyboardTypeURL;
-        textField.placeholder = @"Enter URL or Search Terms";
+        textField.placeholder = @"输入网址或搜索词";
         textField.textColor = kTextColor();
         [textField setReturnKeyType:UIReturnKeyDone];
     }];
 
     __weak typeof(self) weakSelf = self;
-    [alertController addAction:[UIAlertAction actionWithTitle:@"Search Google"
+    [alertController addAction:[UIAlertAction actionWithTitle:@"用 Google 搜索"
                                                         style:UIAlertActionStyleDefault
                                                       handler:^(__unused UIAlertAction *action) {
         UITextField *textField = alertController.textFields.firstObject;
@@ -437,7 +437,7 @@ static UIColor *kTextColor(void) {
             [weakSelf requestURLorSearchInput];
         }
     }]];
-    [alertController addAction:[UIAlertAction actionWithTitle:@"Go To Website"
+    [alertController addAction:[UIAlertAction actionWithTitle:@"访问网址"
                                                         style:UIAlertActionStyleDefault
                                                       handler:^(__unused UIAlertAction *action) {
         UITextField *textField = alertController.textFields.firstObject;
@@ -462,26 +462,26 @@ static UIColor *kTextColor(void) {
 }
 
 - (void)requestURLorSearchInput {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Quick Menu"
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"快捷菜单"
                                                                              message:@""
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     if (self.webview.canGoForward) {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Go Forward"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"前进"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(__unused UIAlertAction *action) {
             [self.webview goForward];
         }]];
     }
 
-    [alertController addAction:[UIAlertAction actionWithTitle:@"Input URL or Search with Google"
+    [alertController addAction:[UIAlertAction actionWithTitle:@"输入网址或用 Google 搜索"
                                                         style:UIAlertActionStyleDefault
                                                       handler:^(__unused UIAlertAction *action) {
         [self showInputURLorSearchGoogle];
     }]];
 
     if (self.webview.request != nil && self.webview.request.URL.absoluteString.length > 0) {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Reload Page"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"重新加载页面"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(__unused UIAlertAction *action) {
             self.tabCoordinator.previousURL = @"";
@@ -494,25 +494,25 @@ static UIColor *kTextColor(void) {
 }
 
 - (void)showHintsAlert {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (single tap = 4 pt, hold to accelerate); small buttons like a close X snap to the nearest clickable control.\nIn scroll mode the same arrows scroll the page.\nMove the cursor onto any top-bar icon (Back, Reload, Forward, Home, Tabs, Favorites, Hide Bar, Menu) and press Select to use it; the address bar opens the URL sheet.\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause or Select plays or pauses, Menu leaves fullscreen.\nPress Select with the cursor on a video to play or pause it; anywhere else Select clicks the page.\nFavorites open on launch and from the gold star button next to the address bar.\nThe cursor arrow is hidden while a video is fullscreen.\nSingle tap the Play/Pause button to start video playback (with no video it opens the URL sheet).\nAdvanced Menu > Maintenance has Clear Cache, Clear Cookies and Clear All Browsing Data.\nA large page cache and a shared web process speed up loading."
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"使用说明"
+                                                                             message:@"双击触控区可在光标模式与滚动模式之间切换（双击窗口已放宽，更容易切出来）。\n光标模式下点按触控区即可点击。\n用上下左右键移动光标（单按 4pt，长按加速）；像关闭叉号这样的小按钮会自动吸附到最近的可点击控件。按住方向键，光标到达屏幕边缘后网页会自动继续翻动，不用切换模式也能直接下翻。\n滚动模式下方向键用于翻页；光标停在选集、播放列表等网页内部滚动区域时，方向键会优先翻动该区域，不必先切换模式。\n把光标移到顶栏任意图标（返回、刷新、前进、主页、标签页、收藏、隐藏顶栏、菜单）上按 Select 即可使用；地址栏会打开网址输入框。\n单按 Menu 键返回上一页，在首页则退出。\n长按触控区（或长按 Play/Pause）可切换正在播放视频的伪全屏。\n网页自带的全屏按钮也会被重定向到这个全屏。\n全屏时：左右键快进/快退（按一下 10 秒、两下 1 分钟、三下 5 分钟；长按连续快进），上或下键显示/隐藏时间条，Play/Pause 或 Select 播放/暂停，Menu 退出全屏。\n光标停在视频上按 Select 可播放或暂停；其他位置按 Select 点击网页。\n启动时会自动打开收藏，也可点地址栏旁的金色星标打开。\n视频全屏时鼠标箭头会隐藏。\n单按 Play/Pause 键可开始播放视频（没有视频时打开网址输入框）。\n标签页面板中按上键或 Play/Pause 可关闭当前标签页。\n高级菜单 > 维护 里有清除缓存、清除 Cookies、清除全部浏览数据。\n高级菜单 > 兼容性 可循环切换浏览器标识（桌面 Safari / 移动 Safari / 桌面 Chrome）。\n较大的页面缓存与共享 Web 进程可加快加载速度。"
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;
     if (self.preferencesStore.dontShowHintsOnLaunch) {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Always Show On Launch"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"启动时始终显示"
                                                             style:UIAlertActionStyleDestructive
                                                           handler:^(__unused UIAlertAction *action) {
             weakSelf.preferencesStore.dontShowHintsOnLaunch = NO;
         }]];
     } else {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Don't Show This Again"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"不再显示"
                                                             style:UIAlertActionStyleDestructive
                                                           handler:^(__unused UIAlertAction *action) {
             weakSelf.preferencesStore.dontShowHintsOnLaunch = YES;
         }]];
     }
-    [alertController addAction:[UIAlertAction actionWithTitle:@"Dismiss"
+    [alertController addAction:[UIAlertAction actionWithTitle:@"关闭"
                                                         style:UIAlertActionStyleCancel
                                                       handler:nil]];
     [self presentViewController:alertController animated:YES completion:nil];
@@ -798,15 +798,15 @@ static UIColor *kTextColor(void) {
     } else if (self.webview.canGoBack) {
         [self.webview goBack];
     } else {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Exit App?"
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"退出应用？"
                                                                        message:nil
                                                                 preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Exit"
+        [alert addAction:[UIAlertAction actionWithTitle:@"退出"
                                                   style:UIAlertActionStyleDestructive
                                                 handler:^(__unused UIAlertAction *action) {
             exit(EXIT_SUCCESS);
         }]];
-        [alert addAction:[UIAlertAction actionWithTitle:@"Dismiss" style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:@"关闭" style:UIAlertActionStyleCancel handler:nil]];
         [self presentViewController:alert animated:YES completion:nil];
     }
 }
@@ -859,6 +859,24 @@ static UIColor *kTextColor(void) {
 // Select outside fullscreen: toggle the video only when the cursor is on it. The injected engine
 // hit-tests the top frame; a hit on an iframe is fanned out so a cross-origin player still gets the
 // request. Returns NO when nothing is under the cursor, so Select still falls through to a click.
+// build-16: episode/playlist lists live in inner overflow containers. Ask the injected script
+// to scroll the innermost scrollable ancestor under the cursor; 'inner'/'iframe' means it moved,
+// so the caller must NOT also move the document-level UIScrollView.
+- (BOOL)browserRemoteInputControllerScrollInnerContainerByDelta:(CGPoint)delta {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return NO;
+    }
+    CGPoint point = [self browserDOMPointForCursor];
+    NSString *script = [NSString stringWithFormat:
+        @"(function(){"
+        "if(typeof window.__browserPfScrollAtPoint!=='function'){return 'none';}"
+        "try{return window.__browserPfScrollAtPoint(%f,%f,%f,%f);}catch(e){return 'none';}"
+        "})()", point.x, point.y, delta.x, delta.y];
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:script];
+    return [result isEqualToString:@"inner"] || [result isEqualToString:@"iframe"];
+}
+
 - (BOOL)browserRemoteInputControllerTogglePlaybackAtCursorPoint {
     BrowserWebView *webView = self.webview;
     if (webView == nil) {
@@ -1104,7 +1122,7 @@ static BOOL BrowserPseudoFullscreenResultHasTarget(NSString *result) {
                                              selector:@selector(hideNoVideoNotice)
                                                object:nil];
     [self buildPlaybackHUDIfNeeded];
-    self.playbackActionLabel.text = @"No video on this page";
+    self.playbackActionLabel.text = @"此页面没有视频";
     self.playbackHUDContainer.hidden = NO;
     [self.view bringSubviewToFront:self.playbackHUDContainer];
     if (self.remoteInputController.cursorView.superview == self.view) {
@@ -1545,9 +1563,9 @@ static NSString *BrowserSeekFeedbackText(double delta) {
         "})()"];
     NSLog(@"[PlaybackHUD] toggle result=%@", result ?: @"(nil)");
     [self buildPlaybackHUDIfNeeded];
-    self.playbackActionLabel.text = [result isEqualToString:@"playing"] ? @"▶︎ Play" :
-                                    ([result isEqualToString:@"paused"] ? @"⏸ Pause" :
-                                    ([result isEqualToString:@"clicked"] ? @"▶︎ Play (tap)" : @""));
+    self.playbackActionLabel.text = [result isEqualToString:@"playing"] ? @"▶︎ 播放" :
+                                    ([result isEqualToString:@"paused"] ? @"⏸ 暂停" :
+                                    ([result isEqualToString:@"clicked"] ? @"▶︎ 播放（点按）" : @""));
     self.playbackHUDContainer.hidden = NO;
     [self.view bringSubviewToFront:self.playbackHUDContainer];
     if (self.remoteInputController.cursorView.superview == self.view) {
@@ -1675,12 +1693,12 @@ static NSString *BrowserSeekFeedbackText(double delta) {
         return;
     }
 
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Could Not Load Webpage"
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"无法加载网页"
                                                                              message:error.localizedDescription
                                                                       preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     if (tab.requestURL.length > 1) {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Google This Page"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"用 Google 搜索此页"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(__unused UIAlertAction *action) {
             NSURLRequest *searchRequest = [weakSelf.navigationService googleSearchRequestForFailedRequestURLString:tab.requestURL];
@@ -1690,14 +1708,14 @@ static NSString *BrowserSeekFeedbackText(double delta) {
         }]];
     }
     if (self.webview.request != nil && self.webview.request.URL.absoluteString.length > 0) {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Reload Page"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"重新加载页面"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(__unused UIAlertAction *action) {
             weakSelf.tabCoordinator.previousURL = @"";
             [weakSelf.webview reload];
         }]];
     } else {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Enter a URL or Search"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"输入网址或搜索"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(__unused UIAlertAction *action) {
             [weakSelf requestURLorSearchInput];
