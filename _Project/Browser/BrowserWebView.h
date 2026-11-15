@@ -31,6 +31,8 @@ extern NSString * const BrowserPseudoFullscreenRequestEnterKey;
       allowsInlineMediaPlayback:(BOOL)allowsInlineMediaPlayback NS_DESIGNATED_INITIALIZER;
 
 - (void)loadRequest:(NSURLRequest * _Nullable)request;
+/// build-21: render inline HTML (used to show the crash log as a selectable page).
+- (void)loadHTMLString:(NSString * _Nonnull)html baseURL:(NSURL * _Nullable)baseURL;
 - (void)reload;
 - (void)goBack;
 - (void)goForward;
@@ -38,6 +40,13 @@ extern NSString * const BrowserPseudoFullscreenRequestEnterKey;
 - (NSString * _Nonnull)runtimeMediaPreferenceReport;
 - (void)setUserAgent:(NSString * _Nullable)userAgent;
 - (void)pauseAllMediaPlayback;
+/// build-21: mute/unmute every media element in the page and keep the page from undoing it.
+- (void)setTabAudioMuted:(BOOL)muted;
+/// build-21: pause, stop loading, then blank the frame. Used when a tab is closed for good, so no
+/// player heartbeat can bring the audio back.
+- (void)teardownMediaForTabClose;
+/// build-21: label printed in pause/teardown logs only.
+@property (nullable, nonatomic, copy) NSString *mediaPauseTag;
 - (void)installPseudoFullscreenEngineFallback;
 
 + (nullable NSData *)cookieDataRepresentation;
