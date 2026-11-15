@@ -17,6 +17,85 @@
 static NSUInteger const kBrowserURLCacheMemoryCapacity = 32 * 1024 * 1024;
 static NSUInteger const kBrowserURLCacheDiskCapacity = 256 * 1024 * 1024;
 
+// build-20: crash breadcrumbs.
+//
+// "The app sometimes quits while a page loads" cannot be diagnosed by reading the source and
+// guessing which subscript could go out of range -- the previous attempt fixed one real bounds
+// bug and the report came back unchanged. So the app now records why it died:
+//
+//   * NSSetUncaughtExceptionHandler catches Objective-C exceptions (NSRangeException,
+//     NSInvalidArgumentException, ...) and writes name/reason/stack before the process exits.
+//   * A last-checkpoint breadcrumb is written on every navigation start/finish, so the file
+//     also shows which site was loading, which is the one fact no crash log on a TV gives you.
+//
+// The file lives in the app's own container and is readable over the network through the
+// existing file-serving path; it is appended, never truncated, so several crashes accumulate.
+static NSString *BrowserCrashLogPath(void) {
+    static NSString *path = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+        if (dir.length == 0) {
+            dir = NSTemporaryDirectory();
+        }
+        path = [dir stringByAppendingPathComponent:@"browser-crash.log"];
+    });
+    return path;
+}
+
+static void BrowserAppendCrashLog(NSString *text) {
+    if (text.length == 0) {
+        return;
+    }
+    NSString *path = BrowserCrashLogPath();
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:path]) {
+        [text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        return;
+    }
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (handle == nil) {
+        return;
+    }
+    @try {
+        [handle seekToEndOfFile];
+        [handle writeData:[text dataUsingEncoding:NSUTF8StringEncoding]];
+    } @catch (NSException *exception) {
+        // Never let logging itself become the crash.
+        NSLog(@"[CrashLog] append failed: %@", exception);
+    } @finally {
+        [handle closeFile];
+    }
+}
+
+static void BrowserUncaughtExceptionHandler(NSException *exception) {
+    NSString *stamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                     dateStyle:NSDateFormatterMediumStyle
+                                                     timeStyle:NSDateFormatterMediumStyle];
+    NSMutableString *report = [NSMutableString string];
+    [report appendFormat:@"\n===== %@ =====\n", stamp];
+    [report appendFormat:@"exception: %@\n", exception.name];
+    [report appendFormat:@"reason: %@\n", exception.reason];
+    [report appendString:@"symbols:\n"];
+    for (NSString *line in exception.callStackSymbols) {
+        [report appendFormat:@"  %@\n", line];
+    }
+    for (NSString *key in exception.userInfo) {
+        [report appendFormat:@"userInfo[%@]: %@\n", key, exception.userInfo[key]];
+    }
+    NSLog(@"[Crash] %@: %@", exception.name, exception.reason);
+    BrowserAppendCrashLog(report);
+}
+
+/// Called by the browser before each navigation so the log shows what was loading.
+void BrowserRecordNavigationCheckpoint(NSString *URLString) {
+    NSString *stamp = [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                     dateStyle:NSDateFormatterNoStyle
+                                                     timeStyle:NSDateFormatterMediumStyle];
+    BrowserAppendCrashLog([NSString stringWithFormat:@"[%@] navigating: %@\n", stamp,
+                           URLString.length > 300 ? [URLString substringToIndex:300] : URLString]);
+}
+
 @implementation AppDelegate
 
 - (void)restoreCookiesFromDefaults {
@@ -41,6 +120,14 @@ static NSUInteger const kBrowserURLCacheDiskCapacity = 256 * 1024 * 1024;
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 	// Override point for customization after application launch.
+    // Install the crash recorder before anything else can fail: from here on a probabilistic
+    // termination leaves a reason behind instead of just (crashed).
+    NSSetUncaughtExceptionHandler(&BrowserUncaughtExceptionHandler);
+    NSLog(@"[CrashLog] uncaught exception handler installed at %@", BrowserCrashLogPath());
+    BrowserAppendCrashLog([NSString stringWithFormat:@"\n--- launch %@ ---\n",
+                           [NSDateFormatter localizedStringFromDate:[NSDate date]
+                                                         dateStyle:NSDateFormatterMediumStyle
+                                                         timeStyle:NSDateFormatterMediumStyle]]);
     // The default shared cache on tvOS is tiny, so CSS/JS/images get re-downloaded on every page
     // and even on every revisit. A real cache is the single biggest page-load win here.
     NSURLCache *browserCache = [[NSURLCache alloc] initWithMemoryCapacity:kBrowserURLCacheMemoryCapacity
