@@ -26,8 +26,6 @@ static NSString * const kBrowserGlobalArrowPressTypeKey = @"type";
 static NSString * const kBrowserGlobalArrowPressBeganKey = @"began";
 static NSString * const kBrowserGlobalLongPressNotification = @"BrowserGlobalLongPressNotification";
 static NSString * const kBrowserGlobalLongPressTypeKey = @"type";
-static NSString * const kBrowserGlobalLongPressSourceKey = @"source";
-static NSString * const kBrowserGlobalLongPressSourceAuxKey = @"aux";
 
 static UIColor *kTextColor(void) {
     if (@available(tvOS 13, *)) {
@@ -156,10 +154,44 @@ static UIColor *kTextColor(void) {
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     [self.tabCoordinator webViewDidAppear];
-    if (!self.preferencesStore.dontShowHintsOnLaunch && !self.displayedHintsOnLaunch) {
-        [self showHintsAlert];
+    if (!self.displayedHintsOnLaunch) {
+        self.displayedHintsOnLaunch = YES;
+        [self presentLaunchMenus];
     }
-    self.displayedHintsOnLaunch = YES;
+}
+
+// Launch flow: favorites first (that is the shortcut the user asked for), then the usage hints.
+// Presenting both at once would make the second one replace the first, so they are sequenced.
+- (void)presentLaunchMenus {
+    if (self.presentedViewController != nil) {
+        return;
+    }
+
+    BOOL wantsFavoritesOnLaunch = !self.preferencesStore.dontShowFavoritesOnLaunch;
+    if (wantsFavoritesOnLaunch) {
+        __weak typeof(self) weakSelf = self;
+        [self.menuCoordinator showFavoritesMenuWithAutoLaunchOption:YES
+                                                         completion:^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf showLaunchHintsIfNeeded];
+        }];
+        return;
+    }
+
+    [self showLaunchHintsIfNeeded];
+}
+
+- (void)showLaunchHintsIfNeeded {
+    if (self.preferencesStore.dontShowHintsOnLaunch) {
+        return;
+    }
+    if (self.presentedViewController != nil) {
+        return;
+    }
+    [self showHintsAlert];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -204,45 +236,31 @@ static UIColor *kTextColor(void) {
 }
 
 // Long press arrives from the UIApplication sendEvent: bridge, which is the only channel that
-// actually sees Menu/PlayPause under GCEventViewController.
+// actually sees PlayPause under GCEventViewController. Favorites is no longer a long-press action:
+// it opens on launch and from the top bar button.
 - (void)handleGlobalLongPressNotification:(NSNotification *)notification {
     id typeValue = notification.userInfo[kBrowserGlobalLongPressTypeKey];
     if (![typeValue isKindOfClass:[NSNumber class]]) {
         return;
     }
     UIPressType type = (UIPressType)[typeValue integerValue];
-    id sourceValue = notification.userInfo[kBrowserGlobalLongPressSourceKey];
-    BOOL isAuxKey = [sourceValue isKindOfClass:[NSString class]] &&
-                    [sourceValue isEqualToString:kBrowserGlobalLongPressSourceAuxKey];
+    if (type != UIPressTypePlayPause && type != UIPressTypeSelect) {
+        return;
+    }
 
     if (self.tabOverviewController.visible || self.topBarFocusActive) {
-        NSLog(@"[LongPress] ignored type=%ld (overlay active)", (long)type);
+        NSLog(@"[LongPress] ignored PlayPause (overlay active)");
         return;
     }
 
     UIViewController *presented = self.presentedViewController;
     if (presented != nil) {
-        NSLog(@"[LongPress] ignored type=%ld (presented=%@)", (long)type, NSStringFromClass([presented class]));
+        NSLog(@"[LongPress] ignored PlayPause (presented=%@)", NSStringFromClass([presented class]));
         return;
     }
 
-    if (type == UIPressTypePlayPause && !isAuxKey) {
-        NSLog(@"[LongPress] PlayPause -> toggle pseudo fullscreen");
-        [self.remoteInputController handleGlobalLongPressType:type];
-        return;
-    }
-
-    if (type == UIPressTypeMenu && isAuxKey) {
-        // An aux key must not arm the Menu suppression flag, so call the host directly.
-        NSLog(@"[LongPress] aux key -> favorites");
-        [self.menuCoordinator showFavoritesMenu];
-        return;
-    }
-
-    if (type == UIPressTypeMenu) {
-        NSLog(@"[LongPress] Menu -> favorites");
-        [self.remoteInputController handleGlobalLongPressType:type];
-    }
+    NSLog(@"[LongPress] PlayPause -> toggle pseudo fullscreen");
+    [self.remoteInputController handleGlobalLongPressType:type];
 }
 
 #pragma mark - Helpers
@@ -325,6 +343,9 @@ static UIColor *kTextColor(void) {
             break;
         case BrowserTopBarActionURL:
             [self showInputURLorSearchGoogle];
+            break;
+        case BrowserTopBarActionFavorites:
+            [self.menuCoordinator showFavoritesMenu];
             break;
         case BrowserTopBarActionFullscreen:
             if (self.viewModel.topNavigationBarVisible) {
@@ -474,7 +495,7 @@ static UIColor *kTextColor(void) {
 
 - (void)showHintsAlert {
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor step by step (hold to keep moving).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the Menu button to open Favorites (bookmarks). A remote's Stop button also opens it.\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nDouble tap the Play/Pause to show the Advanced Menu with more options.\nLong press the Play/Pause button to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek back/forward 10s (hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause plays or pauses, Select shows the timecode bar, Menu leaves fullscreen.\nUse the tabs icon in the top bar to open the tab overview."
+                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (hold to keep moving faster).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause plays or pauses, Select shows the timecode bar, Menu leaves fullscreen.\nFavorites open on launch and from the star button next to the address bar.\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nUse the tabs icon in the top bar to open the tab overview."
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;
@@ -801,6 +822,21 @@ static UIColor *kTextColor(void) {
     }
 }
 
+// Tiered seek: the input controller counts the taps and hands over the finished step.
+- (void)browserRemoteInputControllerApplySeekDelta:(double)delta
+                                  displayedSeconds:(double)displayedSeconds
+                                          tapCount:(NSInteger)tapCount {
+    if (!self.pseudoFullscreenActive) {
+        return;
+    }
+    NSLog(@"[PlaybackHUD] tiered seek taps=%ld delta=%.0f shown=%.0f",
+          (long)tapCount, delta, displayedSeconds);
+    [self seekPlaybackBySeconds:delta
+                   showFeedback:YES
+              displayedMagnitude:displayedSeconds
+                         tapCount:tapCount];
+}
+
 - (void)browserRemoteInputControllerTogglePlaybackHUD {
     [self togglePlaybackHUD];
 }
@@ -830,19 +866,23 @@ static UIColor *kTextColor(void) {
 
 // The frame-side engine is installed by the injected user script in every frame, so driving it
 // from here also reaches videos inside cross-origin iframes, which contentDocument cannot.
+// The reply says what was actually found, so the caller can refuse to enter a blank fullscreen.
 - (NSString *)browserPseudoFullscreenEnterScript {
     return
     @"(function(){"
-    "var applied=false;"
+    "var applied='no-engine';"
     "if(typeof window.__browserPfApply==='function'){"
-        "try{window.__browserPfApply();applied=true;}catch(e){}"
+        "try{applied=window.__browserPfApply();}catch(e){applied='error';}"
     "}"
     "var fanned=false;"
     "if(typeof window.__browserPfFanOut==='function'){"
         "try{fanned=window.__browserPfFanOut('apply');}catch(e){}"
     "}"
-    "if(!applied&&!fanned){return 'no-engine';}"
-    "return applied?('ok'+(fanned?'+frames':'')):('frames-only');"
+    "if(applied==='no-engine'){return 'no-engine';}"
+    "if(applied==='error'){return 'error';}"
+    "if(applied==='ok'){return fanned?'video+frames':'video';}"
+    "if(applied==='iframe'){return fanned?'iframe+frames':'iframe';}"
+    "return fanned?'frames':'no-video';"
     "})()";
 }
 
@@ -887,18 +927,75 @@ static UIColor *kTextColor(void) {
     return result ?: @"";
 }
 
-// Enter initiated by a remote-key shortcut: remember the previous chrome/cursor state so the
-// same shortcut can restore it.
+// True when the engine actually found something to promote to full frame. Entering on a page with
+// no video anywhere would just black out the screen, so the caller checks first.
+// The engine reports one of: no-engine | error | no-video | video | video+frames | iframe |
+// iframe+frames | frames. Only the three concrete hits count.
+static BOOL BrowserPseudoFullscreenResultHasTarget(NSString *result) {
+    if (result.length == 0) {
+        return NO;
+    }
+    static NSString * const kHitPrefixes[] = {@"video", @"iframe", @"frames"};
+    for (NSUInteger i = 0; i < sizeof(kHitPrefixes) / sizeof(kHitPrefixes[0]); i++) {
+        if ([result hasPrefix:kHitPrefixes[i]]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// Enter initiated by a remote-key shortcut. A page with no video at all would just go black, so the
+// result of the styling call decides whether fullscreen may start. Held-Select is a very common
+// key, so a false trigger has to be cheap to recover from; a false refusal also would be annoying,
+// hence one retry: a player can mount a fraction of a second after the key goes down.
 - (void)enterPseudoFullscreenAndRememberChrome {
     if (self.pseudoFullscreenActive) {
         return;
     }
+    [self attemptPseudoFullscreenEnterWithRetry:YES];
+}
+
+- (void)attemptPseudoFullscreenEnterWithRetry:(BOOL)allowRetry {
+    if (self.pseudoFullscreenActive) {
+        return;
+    }
+
+    NSString *styleResult = [self applyPseudoFullscreenStyling];
+    if (BrowserPseudoFullscreenResultHasTarget(styleResult)) {
+        [self activatePseudoFullscreenChrome];
+        return;
+    }
+
+    if (allowRetry) {
+        NSLog(@"[PseudoFullscreen] no target yet (%@), retrying once", styleResult ?: @"(nil)");
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.22 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            [strongSelf attemptPseudoFullscreenEnterWithRetry:NO];
+        });
+        return;
+    }
+
+    NSLog(@"[PseudoFullscreen] no video target (%@), not entering", styleResult ?: @"(nil)");
+    [self showNoVideoForFullscreenNotice];
+}
+
+// Remembers the previous chrome/cursor state, hides the chrome and starts the HUD. Kept separate
+// because a page-initiated request is always honoured (the site asked for it), while the remote-key
+// shortcut is only honoured when there is something to promote.
+- (void)activatePseudoFullscreenChrome {
+    if (self.pseudoFullscreenActive) {
+        return;
+    }
+
     self.pseudoFullscreenTopBarWasVisible = self.viewModel.topNavigationBarVisible;
     self.pseudoFullscreenCursorModeWasEnabled = self.remoteInputController.cursorModeEnabled;
     self.pseudoFullscreenActive = YES;
     self.pseudoFullscreenURLString = [self.webview.request.URL absoluteString];
-
-    [self applyPseudoFullscreenStyling];
 
     // Keep the self-drawn cursor above the web content so it stays visible and tracking.
     [self.view bringSubviewToFront:self.remoteInputController.cursorView];
@@ -916,15 +1013,42 @@ static UIColor *kTextColor(void) {
     [self startPlaybackHUDSession];
 }
 
+// Holding the key on a page without a video must explain itself; a silent black screen looks like
+// the shortcut is broken.
+- (void)showNoVideoForFullscreenNotice {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(hideNoVideoNotice)
+                                               object:nil];
+    [self buildPlaybackHUDIfNeeded];
+    self.playbackActionLabel.text = @"No video on this page";
+    self.playbackHUDContainer.hidden = NO;
+    [self.view bringSubviewToFront:self.playbackHUDContainer];
+    if (self.remoteInputController.cursorView.superview == self.view) {
+        [self.view bringSubviewToFront:self.remoteInputController.cursorView];
+    }
+    [self performSelector:@selector(hideNoVideoNotice)
+               withObject:nil
+               afterDelay:2.0];
+}
+
+- (void)hideNoVideoNotice {
+    if (self.pseudoFullscreenActive) {
+        return;
+    }
+    self.playbackActionLabel.text = @"";
+    self.playbackHUDContainer.hidden = YES;
+}
+
 // Enter requested by the page itself (its own fullscreen button). The page called
 // requestFullscreen; we neutralised that and restyle here instead, so no native container is
-// created and the app chrome can actually hide.
+// created and the app chrome can actually hide. No target check: the site asked for fullscreen.
 - (void)enterPseudoFullscreenFromPage {
     if (self.pseudoFullscreenActive) {
         [self applyPseudoFullscreenStyling];
         return;
     }
-    [self enterPseudoFullscreenAndRememberChrome];
+    [self applyPseudoFullscreenStyling];
+    [self activatePseudoFullscreenChrome];
 }
 
 - (void)exitPseudoFullscreen {
@@ -935,6 +1059,7 @@ static UIColor *kTextColor(void) {
     }
 
     self.pseudoFullscreenActive = NO;
+    [self.remoteInputController resetPseudoFullscreenSeekState];
     [self stopPlaybackHUDSession];
 
     // Restore the cursor mode the user had before going fullscreen.
@@ -964,6 +1089,24 @@ static NSString *BrowserFormatTimecode(double seconds) {
         return [NSString stringWithFormat:@"%ld:%02ld:%02ld", (long)hours, (long)minutes, (long)secs];
     }
     return [NSString stringWithFormat:@"%02ld:%02ld", (long)minutes, (long)secs];
+}
+
+// Seek feedback reads as a time span, not as a raw second count: "+1:00" beats "+60s".
+static NSString *BrowserSeekFeedbackText(double delta) {
+    BOOL forward = (delta >= 0);
+    double magnitude = fabs(delta);
+    NSString *arrow = forward ? @"⏩" : @"⏪";
+    NSString *sign = forward ? @"+" : @"-";
+    if (magnitude >= 60.0) {
+        NSInteger total = (NSInteger)lround(magnitude);
+        NSInteger minutes = total / 60;
+        NSInteger secs = total % 60;
+        if (secs == 0) {
+            return [NSString stringWithFormat:@"%@ %@%ldm", arrow, sign, (long)minutes];
+        }
+        return [NSString stringWithFormat:@"%@ %@%ld:%02ld", arrow, sign, (long)minutes, (long)secs];
+    }
+    return [NSString stringWithFormat:@"%@ %@%.0fs", arrow, sign, magnitude];
 }
 
 - (void)buildPlaybackHUDIfNeeded {
@@ -1235,12 +1378,26 @@ static NSString *BrowserFormatTimecode(double seconds) {
 }
 
 - (void)seekPlaybackBySeconds:(double)delta showFeedback:(BOOL)showFeedback {
+    [self seekPlaybackBySeconds:delta
+                   showFeedback:showFeedback
+              displayedMagnitude:fabs(delta)
+                       tapCount:0];
+}
+
+// displayedMagnitude is the cumulative step of the tap series, so three taps read "5m" even though
+// the last increment was only the difference to the previous tier.
+- (void)seekPlaybackBySeconds:(double)delta
+                 showFeedback:(BOOL)showFeedback
+            displayedMagnitude:(double)displayedMagnitude
+                     tapCount:(NSInteger)tapCount {
     NSString *result = [self seekPlaybackBySeconds:delta];
     if (showFeedback) {
         [self buildPlaybackHUDIfNeeded];
-        self.playbackActionLabel.text = (delta >= 0)
-            ? [NSString stringWithFormat:@"⏩ +%.0fs", delta]
-            : [NSString stringWithFormat:@"⏪ %.0fs", delta];
+        self.playbackActionLabel.text = BrowserSeekFeedbackText(delta >= 0 ? displayedMagnitude : -displayedMagnitude);
+        if (tapCount >= 2) {
+            self.playbackActionLabel.text = [NSString stringWithFormat:@"%@  ×%ld",
+                                             self.playbackActionLabel.text, (long)tapCount];
+        }
         self.playbackHUDContainer.hidden = NO;
         [self.view bringSubviewToFront:self.playbackHUDContainer];
         if (self.remoteInputController.cursorView.superview == self.view) {
@@ -1302,12 +1459,27 @@ static NSString *BrowserFormatTimecode(double seconds) {
     NSLog(@"[PlaybackHUD] toggle result=%@", result ?: @"(nil)");
     [self buildPlaybackHUDIfNeeded];
     self.playbackActionLabel.text = [result isEqualToString:@"playing"] ? @"▶︎ Play" :
-                                    ([result isEqualToString:@"paused"] ? @"⏸ Pause" : @"");
+                                    ([result isEqualToString:@"paused"] ? @"⏸ Pause" :
+                                    ([result isEqualToString:@"clicked"] ? @"▶︎ Play (tap)" : @""));
     self.playbackHUDContainer.hidden = NO;
+    [self.view bringSubviewToFront:self.playbackHUDContainer];
     if (self.remoteInputController.cursorView.superview == self.view) {
         [self.view bringSubviewToFront:self.remoteInputController.cursorView];
     }
     [self updatePlaybackHUDWithState:[self queryPlaybackState]];
+    [self schedulePlaybackHUDAutoHide];
+
+    // The page may take a moment to actually start; re-poll shortly so the HUD tells the truth
+    // instead of showing a stale "playing" that never happened.
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.55 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf == nil || !strongSelf.pseudoFullscreenActive) {
+            return;
+        }
+        [strongSelf updatePlaybackHUDWithState:[strongSelf queryPlaybackState]];
+    });
 }
 
 - (NSString *)browserRemoteInputControllerHoverStateAtCursorPoint:(CGPoint)point {
