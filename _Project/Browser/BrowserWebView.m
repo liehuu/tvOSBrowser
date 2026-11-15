@@ -1457,8 +1457,9 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
 @property (nullable, nonatomic, copy) NSString *lastTitle;
 @property (nonatomic, copy) NSString *userAgent;
 @property (nonatomic) BOOL loading;
-/// build-21: free-form label used only in pause/teardown logs so a line can be tied back to a tab.
-@property (nullable, nonatomic, copy) NSString *mediaPauseTag;
+// mediaPauseTag is declared in the header (readwrite). Re-declaring it here as copy/nullable is an
+// illegal redeclaration, not a harmless restatement: the extension may only widen a property to
+// readwrite, never restate its attributes.
 
 @end
 
