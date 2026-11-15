@@ -398,15 +398,26 @@ static NSString * const kEditableElementSelector = @"input, textarea, select, [c
                                                                        "}"
                                                                        "function browserLooksLikeNavigationTarget(element) {"
                                                                            "if (!element) { return false; }"
-                                                                           "var tagName = element.tagName ? element.tagName.toLowerCase() : '';"
-                                                                           "if (tagName !== 'a' && tagName !== 'button') { return false; }"
+                                                                           "if (!element.tagName) { return false; }"
+                                                                           "var tagName = element.tagName.toLowerCase();"
+                                                                           // build-20: only <a>/<button> used to count as a navigation target, so a
+                                                                           // card built from a div with role=button or an inline onclick -- the usual
+                                                                           // shape of a video tile on Youku's home page -- was classified as a *video*
+                                                                           // control and the click was swallowed by the play/pause branch below. That
+                                                                           // is why some tiles on the same page responded and others did nothing at all.
+                                                                           // The set recognised here now matches kInteractiveElementSelector.
+                                                                           "var isLinkTag = tagName === 'a' || tagName === 'button' || tagName === 'area';"
+                                                                           "var hasClickRole = !!(element.matches && element.matches(\"[role='button'], [role='link'], [onclick], [tabindex]\"));"
+                                                                           "if (!isLinkTag && !hasClickRole) { return false; }"
                                                                            "if (element.closest && element.closest('nav, header, [role=\"navigation\"], .ac-gn, .ac-gn-content, .ac-gn-list, .globalnav')) { return true; }"
-                                                                           "if (tagName === 'a') {"
+                                                                           "if (tagName === 'a' || tagName === 'area') {"
                                                                                "var href = (element.getAttribute ? (element.getAttribute('href') || '') : '').trim().toLowerCase();"
                                                                                "if (href && href !== '#' && href.indexOf('javascript:') !== 0 && href.indexOf('mailto:') !== 0 && href.indexOf('tel:') !== 0) {"
                                                                                    "return true;"
                                                                                "}"
                                                                            "}"
+                                                                           // A container that some descendant marks as a link is a link for our purposes.
+                                                                           "if (hasClickRole && element.querySelector && element.querySelector('a[href]')) { return true; }"
                                                                            "return false;"
                                                                        "}"
                                                                        "if (browserLooksLikeNavigationTarget(interactiveElement) &&"
@@ -652,15 +663,22 @@ static NSString * const kEditableElementSelector = @"input, textarea, select, [c
                                                    "}"
                                                    "function browserLooksLikeNavigationTarget(element) {"
                                                        "if (!element) { return false; }"
-                                                       "var tagName = element.tagName ? element.tagName.toLowerCase() : '';"
-                                                       "if (tagName !== 'a' && tagName !== 'button') { return false; }"
+                                                       "if (!element.tagName) { return false; }"
+                                                       "var tagName = element.tagName.toLowerCase();"
+                                                       // build-20: see the identical helper above. A clickable container built
+                                                       // from a div (role=button / onclick / tabindex) is a navigation target
+                                                       // too, otherwise its click is treated as a video control and dropped.
+                                                       "var isLinkTag = tagName === 'a' || tagName === 'button' || tagName === 'area';"
+                                                       "var hasClickRole = !!(element.matches && element.matches(\"[role='button'], [role='link'], [onclick], [tabindex]\"));"
+                                                       "if (!isLinkTag && !hasClickRole) { return false; }"
                                                        "if (element.closest && element.closest('nav, header, [role=\"navigation\"], .ac-gn, .ac-gn-content, .ac-gn-list, .globalnav')) { return true; }"
-                                                       "if (tagName === 'a') {"
+                                                       "if (tagName === 'a' || tagName === 'area') {"
                                                            "var href = (element.getAttribute ? (element.getAttribute('href') || '') : '').trim().toLowerCase();"
                                                            "if (href && href !== '#' && href.indexOf('javascript:') !== 0 && href.indexOf('mailto:') !== 0 && href.indexOf('tel:') !== 0) {"
                                                                "return true;"
                                                            "}"
                                                        "}"
+                                                       "if (hasClickRole && element.querySelector && element.querySelector('a[href]')) { return true; }"
                                                        "return false;"
                                                    "}"
                                                    "var candidate = interactiveElement || resolvedElement;"
