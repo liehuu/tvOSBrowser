@@ -426,7 +426,7 @@ static UIColor *kTextColor(void) {
     }];
 
     __weak typeof(self) weakSelf = self;
-    [alertController addAction:[UIAlertAction actionWithTitle:@"用 Google 搜索"
+    [alertController addAction:[UIAlertAction actionWithTitle:@"用百度搜索"
                                                         style:UIAlertActionStyleDefault
                                                       handler:^(__unused UIAlertAction *action) {
         UITextField *textField = alertController.textFields.firstObject;
@@ -474,7 +474,7 @@ static UIColor *kTextColor(void) {
         }]];
     }
 
-    [alertController addAction:[UIAlertAction actionWithTitle:@"输入网址或用 Google 搜索"
+    [alertController addAction:[UIAlertAction actionWithTitle:@"输入网址或用百度搜索"
                                                         style:UIAlertActionStyleDefault
                                                       handler:^(__unused UIAlertAction *action) {
         [self showInputURLorSearchGoogle];
@@ -1698,7 +1698,7 @@ static NSString *BrowserSeekFeedbackText(double delta) {
                                                                       preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     if (tab.requestURL.length > 1) {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"用 Google 搜索此页"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"用百度搜索此页"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(__unused UIAlertAction *action) {
             NSURLRequest *searchRequest = [weakSelf.navigationService googleSearchRequestForFailedRequestURLString:tab.requestURL];
