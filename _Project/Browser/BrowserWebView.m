@@ -510,8 +510,6 @@ static NSString * const kBrowserPseudoFullscreenMessageName = @"browserPseudoFul
 static NSString *BrowserFullscreenInterceptScript(void) {
     NSString *source =
     @"(function(){"
-        "if(window.__browserFullscreenHijacked){return;}"
-        "window.__browserFullscreenHijacked=true;"
         "var MSG='__BROWSER_PF_MSG__';"
         "function post(enter){"
             "try{"
@@ -562,6 +560,7 @@ static NSString *BrowserFullscreenInterceptScript(void) {
         "}catch(e){}"
         "document.addEventListener('webkitfullscreenchange',function(ev){ev.stopImmediatePropagation();},true);"
         "document.addEventListener('fullscreenchange',function(ev){ev.stopImmediatePropagation();},true);"
+        "window.__browserFullscreenHijacked=true;"
 
         // ---- in-frame pseudo fullscreen engine -------------------------------------------
         // Every frame runs this script, so a same- or cross-origin player iframe can style its
@@ -637,14 +636,17 @@ static NSString *BrowserFullscreenInterceptScript(void) {
             "return acted;"
         "}"
         "window.__browserPfFanOut=pfFanOut;"
-        "window.addEventListener('message',function(ev){"
-            "var d=ev&&ev.data;"
-            "if(!d||typeof d!=='object'||!d.__browserPf){return;}"
-            "try{"
-                "if(d.__browserPf==='apply'){pfApply();pfFanOut('apply');}"
-                "else if(d.__browserPf==='clear'){pfClear();pfFanOut('clear');}"
-            "}catch(e){}"
-        "},false);"
+        "if(!window.__browserPfListenerInstalled){"
+            "window.__browserPfListenerInstalled=true;"
+            "window.addEventListener('message',function(ev){"
+                "var d=ev&&ev.data;"
+                "if(!d||typeof d!=='object'||!d.__browserPf){return;}"
+                "try{"
+                    "if(d.__browserPf==='apply'){pfApply();pfFanOut('apply');}"
+                    "else if(d.__browserPf==='clear'){pfClear();pfFanOut('clear');}"
+                "}catch(e){}"
+            "},false);"
+        "}"
     "})();";
 
     return [source stringByReplacingOccurrencesOfString:@"__BROWSER_PF_MSG__"
@@ -1105,6 +1107,12 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
 
 - (void)installYouTubeRequestCaptureHook {
     [self stringByEvaluatingJavaScriptFromString:BrowserYouTubeRequestCaptureScript()];
+}
+
+// Reinstalls the pseudo fullscreen engine into the live document. Needed when the page was
+// already loaded before the user script became active (restored tabs, cached BFCache pages).
+- (void)installPseudoFullscreenEngineFallback {
+    [self stringByEvaluatingJavaScriptFromString:BrowserFullscreenInterceptScript()];
 }
 
 - (void)setUserAgent:(NSString *)userAgent {
