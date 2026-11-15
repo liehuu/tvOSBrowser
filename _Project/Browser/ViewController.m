@@ -916,6 +916,21 @@ static UIColor *kTextColor(void) {
     return [result isEqualToString:@"inner"];
 }
 
+- (void)browserRemoteInputControllerClearScrollPin {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return;
+    }
+    // build-25: the page-side half of dropping a pin. Without it the marker and the
+    // overscroll-behavior:contain applied with it survive after the arrows are handed back, so an
+    // abandoned pin keeps changing the page's own scroll chaining.
+    [webView stringByEvaluatingJavaScriptFromString:
+        @"(function(){"
+        "if(typeof window.__browserPfClearScrollPin!=='function'){return 'none';}"
+        "try{window.__browserPfClearScrollPin();return 'ok';}catch(e){return 'none';}"
+        "})()"];
+}
+
 - (BOOL)browserRemoteInputControllerTogglePlaybackAtCursorPoint {
     BrowserWebView *webView = self.webview;
     if (webView == nil) {
