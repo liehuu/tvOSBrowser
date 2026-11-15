@@ -537,6 +537,24 @@ static NSString * const kBrowserPseudoFullscreenMessageName = @"browserPseudoFul
 static NSString *BrowserFullscreenInterceptScript(void) {
     NSString *source =
     @"(function(){"
+        // ---- desktop environment normalisation ---------------------------------------------
+        // customUserAgent is already a desktop Safari string, but tvOS WebKit still exposes device
+        // fingerprints (navigator.platform = AppleTV, etc.). Sites that gate playback behind
+        // "install our app" read those extra fields, so align them with the user agent. The UA
+        // itself is NOT overridden here: the Desktop/Mobile switch in Advanced Menu must still work.
+        "try{"
+            "var nav=window.navigator;"
+            "if(nav){"
+                "var ua=String(nav.userAgent||'');"
+                "var mobile=/iPhone|iPad|iPod|Mobile/.test(ua);"
+                "var plat=mobile?'iPhone':'MacIntel';"
+                "var mt=mobile?5:0;"
+                "try{Object.defineProperty(nav,'platform',{get:function(){return plat;},configurable:true});}catch(e){}"
+                "try{Object.defineProperty(nav,'maxTouchPoints',{get:function(){return mt;},configurable:true});}catch(e){}"
+                "try{Object.defineProperty(nav,'vendor',{get:function(){return 'Apple Computer, Inc.';},configurable:true});}catch(e){}"
+                "try{Object.defineProperty(nav,'standalone',{get:function(){return false;},configurable:true});}catch(e){}"
+            "}"
+        "}catch(e){}"
         "var MSG='__BROWSER_PF_MSG__';"
         "function post(enter){"
             "try{"
@@ -770,6 +788,41 @@ static NSString *BrowserFullscreenInterceptScript(void) {
             "},260);"
             "return 'playing';"
         "}"
+        // Select outside fullscreen: only toggle when the cursor actually sits on a video, so
+        // Select still clicks links everywhere else. elementFromPoint can land on a control overlay,
+        // so walk up a few ancestors before falling back to a bounding-rect hit test. A hit on an
+        // iframe is reported separately: the player may live in a cross-origin child frame.
+        "function pfCursorTogglePlay(x,y){"
+            "var v=null;"
+            "try{"
+                "var el=document.elementFromPoint(x,y);"
+                "var node=el;"
+                "for(var i=0;node&&i<6;i++,node=node.parentElement){"
+                    "if(node.tagName==='VIDEO'){v=node;break;}"
+                "}"
+            "}catch(e){}"
+            "if(!v){"
+                "try{"
+                    "var vs=document.querySelectorAll('video');"
+                    "for(var j=0;j<vs.length;j++){"
+                        "var r=vs[j].getBoundingClientRect();"
+                        "if(r.width>0&&r.height>0&&x>=r.left&&x<=r.right&&y>=r.top&&y<=r.bottom){v=vs[j];break;}"
+                    "}"
+                "}catch(e){}"
+            "}"
+            "if(!v){"
+                "try{"
+                    "var fs=document.querySelectorAll('iframe');"
+                    "for(var k=0;k<fs.length;k++){"
+                        "var fr=fs[k].getBoundingClientRect();"
+                        "if(fr.width>0&&fr.height>0&&x>=fr.left&&x<=fr.right&&y>=fr.top&&y<=fr.bottom){return 'iframe';}"
+                    "}"
+                "}catch(e){}"
+                "return 'none';"
+            "}"
+            "window.__browserPfVideo=v;"
+            "return pfTogglePlay();"
+        "}"
         "function pfDuration(){"
             "var v=pfActiveVideo();"
             "if(!v){return 0;}"
@@ -780,6 +833,7 @@ static NSString *BrowserFullscreenInterceptScript(void) {
         "window.__browserPfSeekTo=pfSeekTo;"
         "window.__browserPfTogglePlay=pfTogglePlay;"
         "window.__browserPfResumePlay=pfResumePlay;"
+        "window.__browserPfCursorTogglePlay=pfCursorTogglePlay;"
         "window.__browserPfDuration=pfDuration;"
         "window.__browserPfActiveVideo=pfActiveVideo;"
 
@@ -875,6 +929,10 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                     "else if(d.__browserPf==='resume'){"
                         "pfResumePlay();"
                         "pfFanOutMessage({__browserPf:'resume'});"
+                    "}"
+                    "else if(d.__browserPf==='cursorToggle'&&typeof d.x!=='undefined'&&typeof d.y!=='undefined'){"
+                        "pfCursorTogglePlay(d.x,d.y);"
+                        "pfFanOutMessage({__browserPf:'cursorToggle',x:d.x,y:d.y});"
                     "}"
                     "else if(d.__browserPf==='state'){"
                         // Report upward so a cross-origin parent can still read this frame.
