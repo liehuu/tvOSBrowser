@@ -495,7 +495,7 @@ static UIColor *kTextColor(void) {
 
 - (void)showHintsAlert {
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (hold to keep moving faster).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause plays or pauses, Select shows the timecode bar, Menu leaves fullscreen.\nFavorites open on launch and from the gold star button next to the address bar.\nThe cursor arrow is hidden while a video is fullscreen.\nSingle tap the Play/Pause button to start video playback (with no video it opens the URL sheet).\nUse the tabs icon in the top bar to open the tab overview."
+                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (hold to accelerate faster); in scroll mode the same arrows scroll the page.\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause or Select plays or pauses, Menu leaves fullscreen.\nPress Select with the cursor on a video to play or pause it; anywhere else Select clicks the page.\nFavorites open on launch and from the gold star button next to the address bar.\nThe cursor arrow is hidden while a video is fullscreen.\nSingle tap the Play/Pause button to start video playback (with no video it opens the URL sheet).\nUse the tabs icon in the top bar to open the tab overview.\nAdvanced Menu > Maintenance has Clear Cache, Clear Cookies and Clear All Browsing Data."
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;
@@ -837,6 +837,32 @@ static UIColor *kTextColor(void) {
         "})()";
     NSString *result = [webView stringByEvaluatingJavaScriptFromString:script];
     NSLog(@"[RemotePlay] resume result=%@", result ?: @"(nil)");
+    return [result isEqualToString:@"yes"];
+}
+
+// Select outside fullscreen: toggle the video only when the cursor is on it. The injected engine
+// hit-tests the top frame; a hit on an iframe is fanned out so a cross-origin player still gets the
+// request. Returns NO when nothing is under the cursor, so Select still falls through to a click.
+- (BOOL)browserRemoteInputControllerTogglePlaybackAtCursorPoint {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return NO;
+    }
+    CGPoint point = [self browserDOMPointForCursor];
+    NSString *script = [NSString stringWithFormat:
+        @"(function(){"
+        "var said='none';"
+        "if(typeof window.__browserPfCursorTogglePlay==='function'){"
+            "try{said=window.__browserPfCursorTogglePlay(%f,%f);}catch(e){said='error';}"
+        "}"
+        "if(said==='iframe'&&typeof window.__browserPfFanOutMessage==='function'){"
+            "try{window.__browserPfFanOutMessage({__browserPf:'cursorToggle',x:%f,y:%f});}catch(e){}"
+        "}"
+        "return (said==='playing'||said==='paused'||said==='clicked'||said==='iframe')?'yes':'no';"
+        "})()",
+        point.x, point.y, point.x, point.y];
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:script];
+    NSLog(@"[SelectPlay] cursor toggle result=%@ at (%.0f,%.0f)", result ?: @"(nil)", point.x, point.y);
     return [result isEqualToString:@"yes"];
 }
 
