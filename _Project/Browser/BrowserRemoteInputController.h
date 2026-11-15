@@ -38,6 +38,10 @@ NS_ASSUME_NONNULL_BEGIN
 // Scrolls the pinned container without re-detecting it under the cursor. NO when nothing is
 // pinned any more (page navigated, element removed), which tells the caller to drop the pin.
 - (BOOL)browserRemoteInputControllerScrollPinnedRegionByDelta:(CGPoint)delta;
+// build-25: removes the marker and restores the site's own overscroll-behavior. Must be called
+// whenever the pin is dropped, otherwise an abandoned pin keeps clipping scroll chaining on an
+// element the user is no longer paging.
+- (void)browserRemoteInputControllerClearScrollPin;
 - (void)browserRemoteInputControllerHandlePseudoFullscreenPress;
 - (void)browserRemoteInputControllerHandleFavoritesPress;
 - (BOOL)browserRemoteInputControllerPseudoFullscreenActive;
