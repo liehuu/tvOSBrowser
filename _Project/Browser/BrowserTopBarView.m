@@ -1,4 +1,5 @@
 #import "BrowserTopBarView.h"
+#import <math.h>
 
 #if __has_include(<UIKit/UIGlassEffect.h>)
 #import <UIKit/UIGlassEffect.h>
@@ -34,6 +35,39 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
 }
 
 @end
+
+
+// The favourites glyph must read as a bookmark, not as "new tab" (the old `plus` image did).
+// SF Symbols are preferred; a drawn star is the fallback. Both are templates so the gold tint
+// in newFavoritesIconView applies and the button stands out from the grey navigation arrows.
+static UIImage *BrowserStarFallbackImage(CGFloat side) {
+    if (side <= 0.0) { return nil; }
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.opaque = NO;
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(side, side)
+                                                                               format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
+        CGContextRef ctx = context.CGContext;
+        CGFloat cx = side / 2.0;
+        CGFloat cy = side / 2.0;
+        CGFloat outer = side * 0.46;
+        CGFloat inner = side * 0.20;
+        CGMutablePathRef path = CGPathCreateMutable();
+        for (NSInteger i = 0; i < 10; i++) {
+            CGFloat radius = (i % 2 == 0) ? outer : inner;
+            CGFloat angle = -M_PI_2 + (M_PI * 2.0 * (CGFloat)i / 10.0);
+            CGFloat x = cx + radius * cos(angle);
+            CGFloat y = cy + radius * sin(angle);
+            if (i == 0) { CGPathMoveToPoint(path, NULL, x, y); }
+            else { CGPathAddLineToPoint(path, NULL, x, y); }
+        }
+        CGPathCloseSubpath(path);
+        CGContextSetFillColorWithColor(ctx, UIColor.whiteColor.CGColor);
+        CGContextAddPath(ctx, path);
+        CGContextFillPath(ctx);
+        CGPathRelease(path);
+    }];
+}
 
 @interface BrowserTopBarView ()
 
@@ -134,7 +168,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
     _forwardImageView = [self newIconViewNamed:@"right-arrow-forward"];
     _homeImageView = [self newIconViewNamed:@"house-outline"];
     _tabsImageView = [self newIconViewNamed:@"multi-tab"];
-    _favoritesImageView = [self newIconViewNamed:@"plus"];
+    _favoritesImageView = [self newFavoritesIconView];
     _fullscreenImageView = [self newIconViewNamed:@"resize-arrows"];
     _menuImageView = [self newIconViewNamed:@"menu-2"];
 
@@ -193,6 +227,23 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
 
     [self applyVisualStyle];
     [self setFocusModeActive:NO];
+}
+
+- (UIImageView *)newFavoritesIconView {
+    UIImage *image = [UIImage systemImageNamed:@"star.fill"];
+    if (image == nil) {
+        image = BrowserStarFallbackImage(kTopBarIconSize);
+    }
+    if (image == nil) {
+        image = [UIImage imageNamed:@"plus"];
+    }
+    image = [image imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+    UIImageView *imageView = [[UIImageView alloc] initWithImage:image];
+    imageView.userInteractionEnabled = NO;
+    imageView.contentMode = UIViewContentModeScaleAspectFit;
+    imageView.alpha = 1.0;
+    imageView.tintColor = [UIColor colorWithRed:1.0 green:0.78 blue:0.18 alpha:1.0];
+    return imageView;
 }
 
 - (UIImageView *)newIconViewNamed:(NSString *)imageName {
@@ -283,19 +334,20 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
     rightX = CGRectGetMinX(self.menuImageView.frame) - kTopBarIconSpacing - kTopBarIconSize;
     self.fullscreenImageView.frame = CGRectMake(rightX, iconY, kTopBarIconSize, kTopBarIconSize);
 
-    // Favorites sits between the URL and the fullscreen toggle, next to the address bar.
-    rightX = CGRectGetMinX(self.fullscreenImageView.frame) - kTopBarIconSpacing - kTopBarIconSize;
-    self.favoritesImageView.frame = CGRectMake(rightX, iconY, kTopBarIconSize, kTopBarIconSize);
-
     CGFloat spinnerSide = 34.0;
-    rightX = CGRectGetMinX(self.favoritesImageView.frame) - kTopBarSpinnerSpacing - spinnerSide;
+    rightX = CGRectGetMinX(self.fullscreenImageView.frame) - kTopBarSpinnerSpacing - spinnerSide;
     self.loadingSpinner.frame = CGRectMake(rightX,
                                            floor((CGRectGetHeight(chromeFrame) - spinnerSide) / 2.0),
                                            spinnerSide,
                                            spinnerSide);
 
+    // Favorites now sits directly against the right edge of the address bar (the spinner moved to
+    // its right), so it is visible next to the URL rather than buried in the trailing icon cluster.
+    rightX = CGRectGetMinX(self.loadingSpinner.frame) - kTopBarIconSpacing - kTopBarIconSize;
+    self.favoritesImageView.frame = CGRectMake(rightX, iconY, kTopBarIconSize, kTopBarIconSize);
+
     CGFloat labelOriginX = CGRectGetMaxX(self.tabsImageView.frame) + kTopBarLabelSpacing;
-    CGFloat labelTrailingX = CGRectGetMinX(self.loadingSpinner.frame) - kTopBarLabelSpacing;
+    CGFloat labelTrailingX = CGRectGetMinX(self.favoritesImageView.frame) - kTopBarLabelSpacing;
     CGFloat labelWidth = MAX(200.0, labelTrailingX - labelOriginX);
     self.URLLabel.frame = CGRectMake(labelOriginX,
                                      0.0,
