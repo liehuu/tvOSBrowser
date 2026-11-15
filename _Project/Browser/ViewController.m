@@ -641,6 +641,12 @@ static UIColor *kTextColor(void) {
     [self.videoPlaybackCoordinator playVideoUnderCursorIfAvailable];
 }
 
+// Third entry point for fullscreen, reachable from the Advanced Menu, for remotes where neither
+// Play/Pause nor a clickpad hold is available.
+- (void)browserTogglePseudoFullscreen {
+    [self browserRemoteInputControllerHandlePseudoFullscreenPress];
+}
+
 #pragma mark - BrowserVideoPlaybackCoordinatorHost
 
 - (BOOL)browserIsCursorModeEnabled {
