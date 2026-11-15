@@ -6,8 +6,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSString *)desktopUserAgent;
 + (NSString *)mobileUserAgent;
++ (NSString *)chromeUserAgent;
++ (NSString *)userAgentForMode:(NSInteger)mode;
 
 @property (nonatomic, copy) NSString *userAgent;
+// 0 = desktop Safari, 1 = mobile Safari, 2 = desktop Chrome (build-16).
+@property (nonatomic) NSInteger userAgentMode;
 @property (nonatomic) BOOL mobileModeEnabled;
 @property (nonatomic) BOOL topNavigationBarVisible;
 @property (nonatomic) NSUInteger textFontSize;
@@ -18,6 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy) NSString *homePageURLString;
 
 - (void)ensureUserAgentConsistency;
+- (void)applyUserAgentForCurrentMode;
 
 @end
 
