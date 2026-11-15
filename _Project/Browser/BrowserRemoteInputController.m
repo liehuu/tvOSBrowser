@@ -403,18 +403,29 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 #pragma mark - Arrow-key cursor movement
 
 // Single-tap precision matters most for tiny controls: a close "x" can be a 12-16 px glyph inside
-// a div, so 8 pt still skipped over it. 4 pt doubles the landing positions across a 1920-wide
-// screen, and the DOM hit-test now also snaps to the nearest interactive element within 26 px.
-static CGFloat const kBrowserCursorArrowStep = 4.0;
+// a div, so 8 pt still skipped over it.
+//
+// build-24: 4 pt was still reported as "单次移动的距离还是有点大". The number looked small next to a
+// 1920-wide screen on paper, but the pointer is drawn at 64 pt and its origin is what moves, so the
+// *visual* jump is the full step plus the cursor footprint -- and on a page that overflows
+// horizontally the layout width is wider than the screen, which multiplies every step further.
+// 2 pt also pairs better with the 14 px click-assist ring: the ring covers about seven arrow taps
+// in every direction, so a deliberate row of taps still lands on a small control without the taps
+// themselves having to be coarse. The ramp is untouched -- a hold still opens up immediately.
+static CGFloat const kBrowserCursorArrowStep = 2.0;
 // Holding an arrow ramps the step quickly: the old ramp needed 4 repeats (~0.24 s) for 20 pt and
 // 12 (~0.72 s) for 48 pt, which felt like a crawl next to scroll mode's 44 pt.
-static CGFloat const kBrowserCursorArrowStepRamp[4] = {4.0, 24.0, 56.0, 104.0};
+// build-24: entry 0 follows kBrowserCursorArrowStep (now 2 pt). Leaving a 4 pt first entry while the
+// tap step is 2 pt made the first repeat tick double the step, so every press longer than two ticks
+// still moved at the old rate -- the exact "还是有点大" complaint, just one frame later.
+static CGFloat const kBrowserCursorArrowStepRamp[4] = {2.0, 24.0, 56.0, 104.0};
 // build-23: repeat counter values at which each ramp entry above kicks in. The first entry must sit
 // ABOVE 1, not at 1. The timer increments the counter before it looks the step up, so the very
 // first tick is already repeatCount == 1 -- with a threshold of 1 the second tick jumped straight
-// to 24 pt, and any press slightly longer than a tap moved 6x further than a tap should. Users
-// noticed exactly that: "单按时光标移动跨度变大了". Starting at 2 leaves one more 4 pt step, so a
-// short press and a held press are clearly different, while reaching 24 pt still takes ~0.11 s.
+// to 24 pt, and any press slightly longer than a tap moved many times further than a tap should.
+// Users noticed exactly that: "单按时光标移动跨度变大了". Starting at 2 keeps the tap step for ticks
+// 1 and 2 (build-24: that is now 2 pt, not 4 pt), so a short press and a held press are clearly
+// different, while reaching 24 pt still takes ~0.11 s.
 static NSInteger const kBrowserCursorArrowRampThresholds[3] = {2, 6, 16};
 static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.055;
 static NSInteger const kBrowserCursorArrowMaxRepeats = 120;
@@ -1054,6 +1065,17 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
     }
 
     if (press.type == UIPressTypeMenu) {
+        // build-24: a pinned list is a *mode* of the arrow keys, so the key that means "back out of
+        // the current mode" is the one that should drop it. Without this the only way to give the
+        // arrows back to the page was to aim at some specific spot outside the list and click, which
+        // is a hit-testing problem the user should not have to solve. Menu now releases the pin and
+        // is consumed on that press -- the same press still performs its usual back/exit action on
+        // the NEXT press, so nothing is lost and nothing happens twice.
+        if (self.scrollPinActive) {
+            [self clearScrollPin];
+            NSLog(@"[ScrollPin] released by Menu; arrows control the page again");
+            return YES;
+        }
         [self.host browserRemoteInputControllerHandleMenuPress];
         return YES;
     }
