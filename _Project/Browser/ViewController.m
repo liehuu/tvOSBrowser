@@ -495,7 +495,7 @@ static UIColor *kTextColor(void) {
 
 - (void)showHintsAlert {
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (hold to accelerate faster); in scroll mode the same arrows scroll the page.\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause or Select plays or pauses, Menu leaves fullscreen.\nPress Select with the cursor on a video to play or pause it; anywhere else Select clicks the page.\nFavorites open on launch and from the gold star button next to the address bar.\nThe cursor arrow is hidden while a video is fullscreen.\nSingle tap the Play/Pause button to start video playback (with no video it opens the URL sheet).\nUse the tabs icon in the top bar to open the tab overview.\nAdvanced Menu > Maintenance has Clear Cache, Clear Cookies and Clear All Browsing Data."
+                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (single tap = 4 pt, hold to accelerate); small buttons like a close X snap to the nearest clickable control.\nIn scroll mode the same arrows scroll the page.\nMove the cursor onto any top-bar icon (Back, Reload, Forward, Home, Tabs, Favorites, Hide Bar, Menu) and press Select to use it; the address bar opens the URL sheet.\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause or Select plays or pauses, Menu leaves fullscreen.\nPress Select with the cursor on a video to play or pause it; anywhere else Select clicks the page.\nFavorites open on launch and from the gold star button next to the address bar.\nThe cursor arrow is hidden while a video is fullscreen.\nSingle tap the Play/Pause button to start video playback (with no video it opens the URL sheet).\nAdvanced Menu > Maintenance has Clear Cache, Clear Cookies and Clear All Browsing Data.\nA large page cache and a shared web process speed up loading."
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;
@@ -519,18 +519,34 @@ static UIColor *kTextColor(void) {
 }
 
 - (void)browserHandlePrimaryAction {
-    if (!self.remoteInputController.cursorModeEnabled || self.webview == nil) {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
         return;
     }
 
-    CGPoint point = [self.view convertPoint:self.remoteInputController.cursorView.frame.origin toView:self.webview];
+    CGPoint cursorOrigin = self.remoteInputController.cursorView.frame.origin;
+    CGPoint point = [self.view convertPoint:cursorOrigin toView:webView];
     if (point.y < 0) {
+        // Previously every Select in the top bar just activated focus mode, whose preferred item
+        // defaults to the URL button -- so pressing any icon felt like "it opens the address bar".
+        // Hit-test the actual icon under the cursor and run its action directly instead.
+        CGPoint topBarPoint = [self.view convertPoint:cursorOrigin toView:self.topMenuView];
+        BrowserTopBarAction action = [self.topMenuView actionForPoint:topBarPoint];
+        if (action != BrowserTopBarActionNone) {
+            NSLog(@"[TopBar] cursor Select -> action %ld at (%.0f,%.0f)", (long)action, topBarPoint.x, topBarPoint.y);
+            [self performTopBarAction:action];
+            return;
+        }
         [self activateTopBarFocusMode];
         return;
     }
 
+    if (!self.remoteInputController.cursorModeEnabled) {
+        return;
+    }
+
     CGPoint domPoint = [self browserDOMPointForCursor];
-    [self.pageActionCoordinator handlePageSelectionAtDOMPoint:domPoint webView:self.webview];
+    [self.pageActionCoordinator handlePageSelectionAtDOMPoint:domPoint webView:webView];
 }
 
 - (NSArray<id<UIFocusEnvironment>> *)preferredFocusEnvironments {
