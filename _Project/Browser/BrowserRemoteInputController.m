@@ -58,6 +58,8 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic) CFTimeInterval lastDirectSelectPressTimestamp;
 @property (nonatomic) CFTimeInterval lastSelectPressTimestamp;
 @property (nonatomic) BOOL awaitingSecondSelectPress;
+@property (nonatomic) NSTimer *playPauseLongPressTimer;
+@property (nonatomic) BOOL playPauseLongPressFired;
 
 @end
 
@@ -290,7 +292,50 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
               BrowserPressPhaseString(press.phase),
               [self.host browserRemoteInputControllerPresentedViewController] == nil ? @"(nil)" : NSStringFromClass([[self.host browserRemoteInputControllerPresentedViewController] class]));
     }
+    if (press != nil && press.type == UIPressTypePlayPause) {
+        [self beginPlayPauseLongPressWindow];
+    }
     (void)event;
+}
+
+#pragma mark - Play/Pause long press
+
+- (void)beginPlayPauseLongPressWindow {
+    [self cancelPlayPauseLongPressWindow];
+    self.playPauseLongPressFired = NO;
+
+    if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerTopBarFocusActive]) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    self.playPauseLongPressTimer = [NSTimer scheduledTimerWithTimeInterval:0.7
+                                                                  repeats:NO
+                                                                    block:^(NSTimer *timer) {
+        (void)timer;
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf.playPauseLongPressTimer = nil;
+        if ([strongSelf.host browserRemoteInputControllerPresentedViewController] != nil) {
+            return;
+        }
+        strongSelf.playPauseLongPressFired = YES;
+        NSLog(@"[InputTrace][Root] playPause long press fired");
+        [strongSelf.host browserRemoteInputControllerHandlePseudoFullscreenPress];
+    }];
+}
+
+- (void)cancelPlayPauseLongPressWindow {
+    [self.playPauseLongPressTimer invalidate];
+    self.playPauseLongPressTimer = nil;
 }
 
 - (BOOL)handlePressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
@@ -298,6 +343,15 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     UIPress *press = presses.anyObject;
     if (press == nil) {
         return NO;
+    }
+
+    if (press.type == UIPressTypePlayPause) {
+        BOOL longPressFired = self.playPauseLongPressFired;
+        [self cancelPlayPauseLongPressWindow];
+        self.playPauseLongPressFired = NO;
+        if (longPressFired) {
+            return YES;
+        }
     }
 
     if (press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) {
