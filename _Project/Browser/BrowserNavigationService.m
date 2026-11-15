@@ -53,7 +53,10 @@ static NSUInteger const kMaximumHistoryCount = 100;
         return nil;
     }
     
-    NSString *searchURLString = [NSString stringWithFormat:@"https://www.google.com/search?q=%@", sanitizedQuery];
+    // build-17: Baidu is the default search engine (Google is not reachable on most mainland
+    // networks). The method names keep their historical "google" spelling so no call site or
+    // selector has to change; only the destination differs.
+    NSString *searchURLString = [NSString stringWithFormat:@"https://www.baidu.com/s?wd=%@", sanitizedQuery];
     return [self requestForURLString:searchURLString];
 }
 
