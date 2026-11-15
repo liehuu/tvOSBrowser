@@ -1,0 +1,36 @@
+name: build-tvos
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: xcodebuild -version; xcodebuild -showsdks | grep -i tvos || true
+
+      - name: Build unsigned app
+        run: xcodebuild -project _Project/Browser.xcodeproj -target Browser -configuration Release -sdk appletvos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= ONLY_ACTIVE_ARCH=NO
+
+      - name: Package zip and ipa
+        run: APP=$(find build/Build/Products -maxdepth 2 -name '*.app' -type d | head -1) && echo "APP=$APP" && mkdir -p dist Payload && ditto -c -k --sequesterRsrc --keepParent "$APP" dist/Browser-tvOS.zip && cp -R "$APP" Payload/Browser.app && zip -qry dist/Browser-tvOS.ipa Payload && ls -la dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Browser-tvOS
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "build-${{ github.run_number }}" dist/Browser-tvOS.zip dist/Browser-tvOS.ipa --title "tvOS Browser unsigned build ${{ github.run_number }}" --notes "Unsigned build of ${{ github.sha }}. Sideload with your own signing." --repo "${{ github.repository }}"
