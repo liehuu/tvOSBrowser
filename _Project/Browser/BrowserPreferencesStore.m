@@ -7,6 +7,7 @@ static NSString * const kTextFontSizeDefaultsKey = @"TextFontSize";
 static NSString * const kEnableFullscreenVideoPlaybackDefaultsKey = @"EnableFullscreenVideoPlayback";
 static NSString * const kScalePagesToFitDefaultsKey = @"ScalePagesToFit";
 static NSString * const kDontShowHintsOnLaunchDefaultsKey = @"DontShowHintsOnLaunch";
+static NSString * const kDontShowFavoritesOnLaunchDefaultsKey = @"DontShowFavoritesOnLaunch";
 static NSString * const kHomepageDefaultsKey = @"homepage";
 
 static NSUInteger const kDefaultTextFontSize = 100;
@@ -105,6 +106,15 @@ static NSUInteger const kMaximumTextFontSize = 200;
 
 - (void)setDontShowHintsOnLaunch:(BOOL)dontShowHintsOnLaunch {
     [[self defaults] setBool:dontShowHintsOnLaunch forKey:kDontShowHintsOnLaunchDefaultsKey];
+    [[self defaults] synchronize];
+}
+
+- (BOOL)dontShowFavoritesOnLaunch {
+    return [[self defaults] boolForKey:kDontShowFavoritesOnLaunchDefaultsKey];
+}
+
+- (void)setDontShowFavoritesOnLaunch:(BOOL)dontShowFavoritesOnLaunch {
+    [[self defaults] setBool:dontShowFavoritesOnLaunch forKey:kDontShowFavoritesOnLaunchDefaultsKey];
     [[self defaults] synchronize];
 }
 
