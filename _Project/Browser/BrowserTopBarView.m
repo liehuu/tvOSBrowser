@@ -372,6 +372,19 @@ static UIImage *BrowserStarFallbackImage(CGFloat side) {
     [self updateHighlightFrameForCurrentFocus];
 }
 
+// The focus buttons are hidden/disabled unless focus mode is on, but their frames are always laid
+// out. Map a cursor position (in self's coordinates) to the button under it so a Select press on
+// any top-bar icon runs that icon's action instead of falling through to the URL field.
+- (BrowserTopBarAction)actionForPoint:(CGPoint)point {
+    CGPoint contentPoint = [self convertPoint:point toView:self.chromeEffectView.contentView];
+    for (BrowserTopBarFocusButton *button in self.focusButtons) {
+        if (CGRectContainsPoint(button.frame, contentPoint)) {
+            return button.topBarAction;
+        }
+    }
+    return BrowserTopBarActionNone;
+}
+
 - (CGRect)interactiveFrameForView:(UIView *)view {
     return [self convertRect:view.bounds fromView:view];
 }
