@@ -701,17 +701,30 @@ static CGFloat const kBrowserEdgeScrollCursorFollowRatio = 0.55;
 
 // Drops the pin on both sides: the flag here and the marker in the page. Both must go, or the page
 // keeps a stale marker that the next activation would have to clear anyway.
+//
+// build-25: the page side was never actually cleared -- the comment promised it and the code only
+// flipped the flag. A stale marker matters because overscroll-behavior:contain is still applied to
+// that element, so an abandoned pin keeps changing how the page scrolls even after the arrows have
+// been given back.
 - (void)clearScrollPin {
     if (!self.scrollPinActive) {
         return;
     }
     self.scrollPinActive = NO;
+    [self.host browserRemoteInputControllerClearScrollPin];
     NSLog(@"[ScrollPin] cleared");
 }
 
 // Called once per Select press, before the press is turned into a page action. A press that lands
 // in a scrollable region pins it; a press anywhere else clears the pin, which is exactly the
 // "click outside the list and it stops responding to the arrows" behaviour that was asked for.
+//
+// build-25: three outcomes now, not two. The engine answers 'click' when the thing under the
+// pointer is itself clickable (an episode tile, a play button). That must NOT pin: clicking episode
+// 7 is a request to play episode 7, and the page navigates away immediately, leaving the pin
+// pointing at a list the user has already left -- the reported "点了他，必须返回取消标记才能继续
+// 移动光标". 'click' therefore means "hands off": keep whatever pin state exists, because the press
+// is a navigation, not a statement about the arrows.
 - (void)updateScrollPinForSelectPress {
     // Only meaningful in cursor mode. In scroll mode the arrows already page the document, so a
     // pin would change what the arrows do without the user having asked for it.
@@ -719,6 +732,10 @@ static CGFloat const kBrowserEdgeScrollCursorFollowRatio = 0.55;
         return;
     }
     NSString *token = [self.host browserRemoteInputControllerActivateScrollRegionAtCursorPoint];
+    if ([token isEqualToString:@"click"]) {
+        NSLog(@"[ScrollPin] Select landed on a clickable target; pin left as it was");
+        return;
+    }
     self.scrollPinActive = (token.length > 0);
     if (self.scrollPinActive) {
         NSLog(@"[ScrollPin] armed by Select; arrows now page the list under the cursor");
