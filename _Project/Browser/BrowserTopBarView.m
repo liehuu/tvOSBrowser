@@ -44,6 +44,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
 @property (nonatomic) UIImageView *forwardImageView;
 @property (nonatomic) UIImageView *homeImageView;
 @property (nonatomic) UIImageView *tabsImageView;
+@property (nonatomic) UIImageView *favoritesImageView;
 @property (nonatomic) UIImageView *fullscreenImageView;
 @property (nonatomic) UIImageView *menuImageView;
 @property (nonatomic) UILabel *URLLabel;
@@ -57,6 +58,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
 @property (nonatomic) BrowserTopBarFocusButton *homeFocusButton;
 @property (nonatomic) BrowserTopBarFocusButton *tabsFocusButton;
 @property (nonatomic) BrowserTopBarFocusButton *URLFocusButton;
+@property (nonatomic) BrowserTopBarFocusButton *favoritesFocusButton;
 @property (nonatomic) BrowserTopBarFocusButton *fullscreenFocusButton;
 @property (nonatomic) BrowserTopBarFocusButton *menuFocusButton;
 @property (nonatomic) BrowserTopBarFocusButton *lastFocusedButton;
@@ -132,6 +134,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
     _forwardImageView = [self newIconViewNamed:@"right-arrow-forward"];
     _homeImageView = [self newIconViewNamed:@"house-outline"];
     _tabsImageView = [self newIconViewNamed:@"multi-tab"];
+    _favoritesImageView = [self newIconViewNamed:@"plus"];
     _fullscreenImageView = [self newIconViewNamed:@"resize-arrows"];
     _menuImageView = [self newIconViewNamed:@"menu-2"];
 
@@ -156,6 +159,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
         _forwardImageView,
         _homeImageView,
         _tabsImageView,
+        _favoritesImageView,
         _fullscreenImageView,
         _menuImageView
     ];
@@ -169,6 +173,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
     _homeFocusButton = [self newFocusButtonForAction:BrowserTopBarActionHome accessibilityLabel:@"Home"];
     _tabsFocusButton = [self newFocusButtonForAction:BrowserTopBarActionTabs accessibilityLabel:@"Tabs"];
     _URLFocusButton = [self newFocusButtonForAction:BrowserTopBarActionURL accessibilityLabel:@"Enter URL or Search"];
+    _favoritesFocusButton = [self newFocusButtonForAction:BrowserTopBarActionFavorites accessibilityLabel:@"Favorites"];
     _fullscreenFocusButton = [self newFocusButtonForAction:BrowserTopBarActionFullscreen accessibilityLabel:@"Top Navigation Visibility"];
     _menuFocusButton = [self newFocusButtonForAction:BrowserTopBarActionMenu accessibilityLabel:@"Menu"];
     _focusButtons = @[
@@ -178,6 +183,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
         _homeFocusButton,
         _tabsFocusButton,
         _URLFocusButton,
+        _favoritesFocusButton,
         _fullscreenFocusButton,
         _menuFocusButton
     ];
@@ -277,8 +283,12 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
     rightX = CGRectGetMinX(self.menuImageView.frame) - kTopBarIconSpacing - kTopBarIconSize;
     self.fullscreenImageView.frame = CGRectMake(rightX, iconY, kTopBarIconSize, kTopBarIconSize);
 
+    // Favorites sits between the URL and the fullscreen toggle, next to the address bar.
+    rightX = CGRectGetMinX(self.fullscreenImageView.frame) - kTopBarIconSpacing - kTopBarIconSize;
+    self.favoritesImageView.frame = CGRectMake(rightX, iconY, kTopBarIconSize, kTopBarIconSize);
+
     CGFloat spinnerSide = 34.0;
-    rightX = CGRectGetMinX(self.fullscreenImageView.frame) - kTopBarSpinnerSpacing - spinnerSide;
+    rightX = CGRectGetMinX(self.favoritesImageView.frame) - kTopBarSpinnerSpacing - spinnerSide;
     self.loadingSpinner.frame = CGRectMake(rightX,
                                            floor((CGRectGetHeight(chromeFrame) - spinnerSide) / 2.0),
                                            spinnerSide,
@@ -298,6 +308,7 @@ static CGFloat const kTopBarUniformFocusHeight = 72.0;
     self.homeFocusButton.frame = [self focusFrameForIconView:self.homeImageView];
     self.tabsFocusButton.frame = [self focusFrameForIconView:self.tabsImageView];
     self.URLFocusButton.frame = [self focusFrameForLabel:self.URLLabel];
+    self.favoritesFocusButton.frame = [self focusFrameForIconView:self.favoritesImageView];
     self.fullscreenFocusButton.frame = [self focusFrameForIconView:self.fullscreenImageView];
     self.menuFocusButton.frame = [self focusFrameForMenuIconView:self.menuImageView];
 
