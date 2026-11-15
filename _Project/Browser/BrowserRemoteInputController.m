@@ -63,6 +63,10 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 // build-22: true between a press's begin and its end, independent of the repeat timer. The timer
 // is cancelled and restarted by the duplicate-begin path, so it cannot be used as the token.
 @property (nonatomic) BOOL arrowPressActive;
+// build-23: true while a Select press has pinned a scrollable region (an episode list) as the
+// arrow target. Cleared by a Select that lands outside any scrollable region, and by anything that
+// invalidates the page.
+@property (nonatomic) BOOL scrollPinActive;
 @property (nonatomic) CFTimeInterval lastArrowEndedTimestamp;
 @property (nonatomic) UIPressType lastArrowEndedType;
 @property (nonatomic) BOOL playPauseLongPressConsumed;
@@ -254,6 +258,12 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         return;
     }
 
+    // build-23: a single Select over an episode list pins that list for the arrows, and a single
+    // Select anywhere else unpins it. This runs here rather than on press-down so it shares the
+    // double-Select discriminator: a fast second press still switches scroll mode instead of
+    // pinning, and the user keeps the old gesture as a fallback.
+    [self updateScrollPinForSelectPress];
+
     if ([self.host browserRemoteInputControllerTogglePlaybackAtCursorPoint]) {
         return;
     }
@@ -270,6 +280,10 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         self.lastSelectPressTimestamp = now;
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(handleDeferredSelectPressAction) object:nil];
         if (![self.host browserRemoteInputControllerTabOverviewVisible]) {
+            // build-23: a mode switch is a deliberate change of how the arrows behave, so it also
+            // drops any pin. Leaving it armed would make the arrows page a list in a mode where the
+            // user expects them to page the document.
+            [self clearScrollPin];
             [self setCursorModeEnabled:!self.cursorModeEnabled];
         }
         return;
@@ -391,17 +405,17 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 // Single-tap precision matters most for tiny controls: a close "x" can be a 12-16 px glyph inside
 // a div, so 8 pt still skipped over it. 4 pt doubles the landing positions across a 1920-wide
 // screen, and the DOM hit-test now also snaps to the nearest interactive element within 26 px.
-// Hold acceleration was confirmed good in build-14 and is deliberately unchanged: the ramp still
-// reaches 96 pt after 28 repeats (~1.7 s at 0.06 s) while a tap stays precise.
 static CGFloat const kBrowserCursorArrowStep = 4.0;
-// Holding an arrow ramps the step quickly. The old ramp only reached 20 pt after 4 repeats
-// (~0.24 s) and 48 pt after 12 (~0.72 s), so a held arrow crawled for most of a second -- which
-// users felt as "very slow" compared with scroll mode, where one press moves 44 pt. The first
-// step is still 4 pt so aiming stays precise, but the ramp arrives within a few frames.
+// Holding an arrow ramps the step quickly: the old ramp needed 4 repeats (~0.24 s) for 20 pt and
+// 12 (~0.72 s) for 48 pt, which felt like a crawl next to scroll mode's 44 pt.
 static CGFloat const kBrowserCursorArrowStepRamp[4] = {4.0, 24.0, 56.0, 104.0};
-// Repeat counter values at which each ramp entry above kicks in. Reaching 24 pt within two
-// repeats (~0.12 s) is what makes a hold feel immediate instead of sluggish.
-static NSInteger const kBrowserCursorArrowRampThresholds[3] = {1, 6, 16};
+// build-23: repeat counter values at which each ramp entry above kicks in. The first entry must sit
+// ABOVE 1, not at 1. The timer increments the counter before it looks the step up, so the very
+// first tick is already repeatCount == 1 -- with a threshold of 1 the second tick jumped straight
+// to 24 pt, and any press slightly longer than a tap moved 6x further than a tap should. Users
+// noticed exactly that: "单按时光标移动跨度变大了". Starting at 2 leaves one more 4 pt step, so a
+// short press and a held press are clearly different, while reaching 24 pt still takes ~0.11 s.
+static NSInteger const kBrowserCursorArrowRampThresholds[3] = {2, 6, 16};
 static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.055;
 static NSInteger const kBrowserCursorArrowMaxRepeats = 120;
 // Scroll mode reuses the same timer but measures travel in page content, so its steps are larger.
@@ -615,6 +629,24 @@ static CGFloat const kBrowserEdgeScrollCursorFollowRatio = 0.55;
                     step = kBrowserCursorArrowStepRamp[i + 1];
                 }
             }
+            // build-23: a pinned episode list takes the arrows first. Without this the pointer had
+            // to be walked onto the list for every single scroll, and paging a list therefore meant
+            // switching to scroll mode by double Select -- which is what the user asked to avoid.
+            // Only the vertical arrows are claimed by the pin: horizontal arrows still move the
+            // cursor, because a list is paged top to bottom and the pointer must stay aimable.
+            if (strongSelf.scrollPinActive &&
+                (strongSelf.cursorArrowRepeatPressType == UIPressTypeDownArrow ||
+                 strongSelf.cursorArrowRepeatPressType == UIPressTypeUpArrow)) {
+                CGPoint pinnedDelta = [strongSelf scrollDeltaForPressType:strongSelf.cursorArrowRepeatPressType
+                                                                    step:step];
+                // Consume the press either way while the pin is armed. The first version fell
+                // through to edge paging when the list could not move, so once the episode list
+                // reached its end the whole document started paging under it -- the user reported
+                // exactly that. A pinned list that has hit its end should simply stop; clicking
+                // outside the list is what gives the arrows back to the page.
+                [strongSelf.host browserRemoteInputControllerScrollPinnedRegionByDelta:pinnedDelta];
+                return;
+            }
             // build-20: page only once the pointer has actually reached an edge of the page (or of
             // the inner list under it) -- that is what moveCursor returns NO for. An earlier build
             // also started paging merely because the key had been held long enough, while the
@@ -651,6 +683,34 @@ static CGFloat const kBrowserEdgeScrollCursorFollowRatio = 0.55;
     if (hadRepeatTimer) {
         [self updateCursorImageForCurrentPosition];
         [self.host browserRemoteInputControllerPersistSession];
+    }
+}
+
+#pragma mark - Scroll region pin (build-23)
+
+// Drops the pin on both sides: the flag here and the marker in the page. Both must go, or the page
+// keeps a stale marker that the next activation would have to clear anyway.
+- (void)clearScrollPin {
+    if (!self.scrollPinActive) {
+        return;
+    }
+    self.scrollPinActive = NO;
+    NSLog(@"[ScrollPin] cleared");
+}
+
+// Called once per Select press, before the press is turned into a page action. A press that lands
+// in a scrollable region pins it; a press anywhere else clears the pin, which is exactly the
+// "click outside the list and it stops responding to the arrows" behaviour that was asked for.
+- (void)updateScrollPinForSelectPress {
+    // Only meaningful in cursor mode. In scroll mode the arrows already page the document, so a
+    // pin would change what the arrows do without the user having asked for it.
+    if (!self.cursorModeEnabled) {
+        return;
+    }
+    NSString *token = [self.host browserRemoteInputControllerActivateScrollRegionAtCursorPoint];
+    self.scrollPinActive = (token.length > 0);
+    if (self.scrollPinActive) {
+        NSLog(@"[ScrollPin] armed by Select; arrows now page the list under the cursor");
     }
 }
 
