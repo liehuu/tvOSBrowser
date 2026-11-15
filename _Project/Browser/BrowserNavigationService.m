@@ -107,7 +107,44 @@ static NSUInteger const kMaximumHistoryCount = 100;
     if (userAgent.length > 0) {
         [request setValue:userAgent forHTTPHeaderField:@"User-Agent"];
     }
+    // build-17: Youku (and several other Chinese video sites) validate the top-level Referer and
+    // treat a missing or foreign one as an unauthorised playback request, which the page then
+    // reports as "log in to continue". A desktop browser always sends Referer for a navigation,
+    // so a request that arrives without it is already the anomaly. Sending the site's own origin
+    // makes the navigation look like the in-site click it actually is; nothing is forged about
+    // the account, only the header a browser would have sent anyway.
+    NSString *referer = [self refererForURL:URL];
+    if (referer.length > 0) {
+        [request setValue:referer forHTTPHeaderField:@"Referer"];
+    }
     return request;
+}
+
+/// The origin to advertise as Referer for a navigation, or nil when the host is not one that
+/// checks it. Only the scheme and host are used: no path, no account data.
+- (NSString *)refererForURL:(NSURL *)URL {
+    NSString *host = URL.host.lowercaseString;
+    if (host.length == 0) {
+        return nil;
+    }
+    static NSArray<NSString *> *refererCheckedSuffixes = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // youku.com / tudou.com are the same platform; iqiyi.com and bilibili.com apply the same
+        // style of check, so they are covered here as well.
+        refererCheckedSuffixes = @[@"youku.com",
+                                   @"tudou.com",
+                                   @"iqiyi.com",
+                                   @"bilibili.com"];
+    });
+    for (NSString *suffix in refererCheckedSuffixes) {
+        if ([host isEqualToString:suffix] ||
+            ([host hasSuffix:[@"." stringByAppendingString:suffix]] && host.length > suffix.length + 1)) {
+            NSString *scheme = URL.scheme.length > 0 ? URL.scheme : @"https";
+            return [NSString stringWithFormat:@"%@://%@/", scheme, host];
+        }
+    }
+    return nil;
 }
 
 - (NSString *)trimmedString:(NSString *)string {
