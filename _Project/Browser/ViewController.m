@@ -495,7 +495,7 @@ static UIColor *kTextColor(void) {
 
 - (void)showHintsAlert {
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (hold to keep moving faster).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause plays or pauses, Select shows the timecode bar, Menu leaves fullscreen.\nFavorites open on launch and from the star button next to the address bar.\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nUse the tabs icon in the top bar to open the tab overview."
+                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor (hold to keep moving faster).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the touch area (or long press Play/Pause) to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek (tap once for 10s, twice for 1 min, three times for 5 min; hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause plays or pauses, Select shows the timecode bar, Menu leaves fullscreen.\nFavorites open on launch and from the gold star button next to the address bar.\nThe cursor arrow is hidden while a video is fullscreen.\nSingle tap the Play/Pause button to start video playback (with no video it opens the URL sheet).\nUse the tabs icon in the top bar to open the tab overview."
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;
@@ -804,6 +804,42 @@ static UIColor *kTextColor(void) {
     }
 }
 
+// A learning remote's dedicated Play key arrives as a PlayPause press. WebKit rejects play()
+// without a user activation while pause() needs none, so drive the resume from native code: the
+// injected engine fans the request out to every frame (including cross-origin iframes), and each
+// frame only acts when its own video is paused. Returns whether any video was found, so the input
+// controller can keep the URL sheet as the no-video fallback.
+- (BOOL)browserRemoteInputControllerHandleRemotePlayRequest {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return NO;
+    }
+    NSString *script =
+        @"(function(){"
+        "var said='none';"
+        "if(typeof window.__browserPfResumePlay==='function'){"
+            "try{said=window.__browserPfResumePlay();}catch(e){said='error';}"
+        "}"
+        "if(typeof window.__browserPfFanOutMessage==='function'){"
+            "try{window.__browserPfFanOutMessage({__browserPf:'resume'});}catch(e){}"
+        "}"
+        "var st='none';"
+        "if(typeof window.__browserPfCollectState==='function'){"
+            "try{st=window.__browserPfCollectState();}catch(e){}"
+        "}"
+        // A cross-origin player may not have answered the state poll yet. Counting an iframe as a
+        // possible video keeps the Play key from falling through to the URL sheet on such pages.
+        "var domVideo=false;"
+        "try{domVideo=(document.querySelector('video')!==null)||(document.querySelectorAll('iframe').length>0);}catch(e){}"
+        "var hasVideo=(said==='playing'||said==='already'||said==='clicked')||"
+            "(st&&st!=='none'&&st!=='error'&&st.indexOf('|')>0)||domVideo;"
+        "return hasVideo?'yes':'no';"
+        "})()";
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:script];
+    NSLog(@"[RemotePlay] resume result=%@", result ?: @"(nil)");
+    return [result isEqualToString:@"yes"];
+}
+
 - (void)browserRemoteInputControllerHandleAdvancedMenuPress {
     [self showAdvancedMenu];
 }
@@ -1003,13 +1039,13 @@ static BOOL BrowserPseudoFullscreenResultHasTarget(NSString *result) {
     self.pseudoFullscreenActive = YES;
     self.pseudoFullscreenURLString = [self.webview.request.URL absoluteString];
 
-    // Keep the self-drawn cursor above the web content so it stays visible and tracking.
-    [self.view bringSubviewToFront:self.remoteInputController.cursorView];
-
-    // Fullscreen playback needs a pointer: force cursor mode on while it lasts.
+    // Keep cursor mode on so the key routing stays consistent, but hide the arrow itself: a
+    // fullscreen video has no pointer. refreshInteractionState reads pseudoFullscreenActive (set
+    // above), so the cursor disappears as soon as fullscreen starts.
     if (!self.remoteInputController.cursorModeEnabled) {
         [self.remoteInputController setCursorModeEnabled:YES];
     }
+    [self.remoteInputController refreshInteractionState];
 
     if (self.viewModel.topNavigationBarVisible) {
         [self browserHideTopNav];
@@ -1079,6 +1115,9 @@ static BOOL BrowserPseudoFullscreenResultHasTarget(NSString *result) {
     }
     self.pseudoFullscreenTopBarWasVisible = NO;
     self.pseudoFullscreenURLString = nil;
+    // The arrow must come back even when cursor mode was already on (in that case the setter above
+    // is skipped and would leave the cursor hidden).
+    [self.remoteInputController refreshInteractionState];
 }
 
 #pragma mark - Playback HUD (elapsed / duration / progress + seek feedback)
