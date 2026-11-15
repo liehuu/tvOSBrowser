@@ -1,6 +1,7 @@
 #import "BrowserPreferencesStore.h"
 
 static NSString * const kUserAgentDefaultsKey = @"UserAgent";
+static NSString * const kUserAgentModeDefaultsKey = @"UserAgentMode";
 static NSString * const kMobileModeDefaultsKey = @"MobileMode";
 static NSString * const kShowTopNavigationBarDefaultsKey = @"ShowTopNavigationBar";
 static NSString * const kTextFontSizeDefaultsKey = @"TextFontSize";
@@ -24,6 +25,22 @@ static NSUInteger const kMaximumTextFontSize = 200;
     return @"Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 }
 
+// build-16: a third, generic compatibility identity. Some sites reject Safari/WebKit UAs while
+// serving desktop Chrome normally. This does not defeat server-side login or app-only streams.
++ (NSString *)chromeUserAgent {
+    return @"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+}
+
++ (NSString *)userAgentForMode:(NSInteger)mode {
+    if (mode == 1) {
+        return BrowserPreferencesStore.mobileUserAgent;
+    }
+    if (mode == 2) {
+        return BrowserPreferencesStore.chromeUserAgent;
+    }
+    return BrowserPreferencesStore.desktopUserAgent;
+}
+
 - (NSUserDefaults *)defaults {
     return [NSUserDefaults standardUserDefaults];
 }
@@ -32,7 +49,33 @@ static NSUInteger const kMaximumTextFontSize = 200;
     if (self.userAgent.length > 0) {
         return;
     }
-    self.userAgent = self.mobileModeEnabled ? BrowserPreferencesStore.mobileUserAgent : BrowserPreferencesStore.desktopUserAgent;
+    self.userAgent = [BrowserPreferencesStore userAgentForMode:self.userAgentMode];
+}
+
+// build-16: keep the stored UA, MobileMode flag and the three-state mode in sync. AppDelegate
+// calls this on every launch so a Chrome-mode selection survives a restart instead of being
+// overwritten with the desktop Safari string.
+- (void)applyUserAgentForCurrentMode {
+    NSInteger mode = self.userAgentMode;
+    [[self defaults] setObject:[BrowserPreferencesStore userAgentForMode:mode] forKey:kUserAgentDefaultsKey];
+    [[self defaults] setBool:(mode == 1) forKey:kMobileModeDefaultsKey];
+    [[self defaults] synchronize];
+}
+
+- (NSInteger)userAgentMode {
+    NSNumber *stored = [[self defaults] objectForKey:kUserAgentModeDefaultsKey];
+    if (stored != nil) {
+        NSInteger mode = stored.integerValue;
+        return (mode >= 0 && mode <= 2) ? mode : 0;
+    }
+    // Migration: builds before build-16 only stored the MobileMode flag.
+    return [[self defaults] boolForKey:kMobileModeDefaultsKey] ? 1 : 0;
+}
+
+- (void)setUserAgentMode:(NSInteger)userAgentMode {
+    NSInteger mode = (userAgentMode >= 0 && userAgentMode <= 2) ? userAgentMode : 0;
+    [[self defaults] setInteger:mode forKey:kUserAgentModeDefaultsKey];
+    [self applyUserAgentForCurrentMode];
 }
 
 - (NSString *)userAgent {
@@ -40,7 +83,7 @@ static NSUInteger const kMaximumTextFontSize = 200;
     if (userAgent.length > 0) {
         return userAgent;
     }
-    return self.mobileModeEnabled ? BrowserPreferencesStore.mobileUserAgent : BrowserPreferencesStore.desktopUserAgent;
+    return [BrowserPreferencesStore userAgentForMode:self.userAgentMode];
 }
 
 - (void)setUserAgent:(NSString *)userAgent {
