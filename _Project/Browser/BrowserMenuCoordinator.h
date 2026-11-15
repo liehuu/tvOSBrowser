@@ -33,4 +33,10 @@
 - (void)showAdvancedMenu;
 - (void)showFavoritesMenu;
 
+// Launch-time variant: adds a "Don't show Favorites on launch" action and calls completion once
+// the menu is dismissed (whether by picking an entry or by cancelling), so the caller can chain
+// the next launch dialog.
+- (void)showFavoritesMenuWithAutoLaunchOption:(BOOL)includeAutoLaunchOption
+                                  completion:(void (^ _Nullable)(void))completion;
+
 @end
