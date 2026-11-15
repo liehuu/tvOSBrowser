@@ -14,6 +14,9 @@
 
 @end
 
+static NSUInteger const kBrowserURLCacheMemoryCapacity = 32 * 1024 * 1024;
+static NSUInteger const kBrowserURLCacheDiskCapacity = 256 * 1024 * 1024;
+
 @implementation AppDelegate
 
 - (void)restoreCookiesFromDefaults {
@@ -38,6 +41,15 @@
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 	// Override point for customization after application launch.
+    // The default shared cache on tvOS is tiny, so CSS/JS/images get re-downloaded on every page
+    // and even on every revisit. A real cache is the single biggest page-load win here.
+    NSURLCache *browserCache = [[NSURLCache alloc] initWithMemoryCapacity:kBrowserURLCacheMemoryCapacity
+                                                            diskCapacity:kBrowserURLCacheDiskCapacity
+                                                                diskPath:@"BrowserURLCache"];
+    [NSURLCache setSharedURLCache:browserCache];
+    NSLog(@"[Cache] shared URL cache configured memory=%lu disk=%lu",
+          (unsigned long)kBrowserURLCacheMemoryCapacity,
+          (unsigned long)kBrowserURLCacheDiskCapacity);
     if ([[NSUserDefaults standardUserDefaults] boolForKey:@"MobileMode"]) {
         [[NSUserDefaults standardUserDefaults] setObject:BrowserPreferencesStore.mobileUserAgent forKey:@"UserAgent"];
         [[NSUserDefaults standardUserDefaults] setBool:YES forKey:@"MobileMode"];
