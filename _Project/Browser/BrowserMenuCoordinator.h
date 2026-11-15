@@ -23,6 +23,9 @@
 - (void)browserRecreateActiveWebViewPreservingCurrentURL;
 - (void)browserBringCursorToFront;
 - (void)browserPlayVideoUnderCursorIfAvailable;
+// Toggles the app's pseudo fullscreen from the menu, so fullscreen is reachable even on a remote
+// with neither Play/Pause nor a usable clickpad hold.
+- (void)browserTogglePseudoFullscreen;
 
 @end
 
