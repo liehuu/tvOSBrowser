@@ -1302,6 +1302,90 @@ static NSString *BrowserFullscreenInterceptScript(void) {
         "}"
         "window.__browserPfScrollAtPoint=pfScrollAtPoint;"
 
+        // build-23: "one Select press pins the episode list so the arrows page it".
+        // Without a pin the arrows only scroll an inner list while the pointer happens to sit on
+        // it, and in practice picking a list then paging it meant toggling scroll mode with a
+        // double Select and losing the pointer. The pin makes the intent explicit: Select over a
+        // scrollable region marks that element, arrows scroll it, Select anywhere without one
+        // marks nothing and the pin is dropped on the app side.
+        //
+        // The marker is an attribute rather than a JS variable so it survives the app asking a
+        // different way later, and so the app can clear it. A WeakRef-free approach is used
+        // (element lookup by attribute) because the page can re-render a list at any time.
+        "var PF_PIN_ATTR='data-browser-scroll-pin';"
+        "var PF_PIN_STYLE='data-browser-scroll-pin-style';"
+        // build-23: a list that has reached its end must not hand the scroll on to the page.
+        // Even with our own code not touching the document, the browser's scroll-chaining does it
+        // for any remaining delta, which is why the page crept a little when an episode list hit
+        // the bottom. overscroll-behavior:contain stops that at the source. The previous inline
+        // value is saved so unpinning restores the page exactly as the site left it.
+        "function pfPinStyle(node){"
+            "try{"
+                "if(node.hasAttribute(PF_PIN_STYLE)){return;}"
+                "node.setAttribute(PF_PIN_STYLE,node.style.overscrollBehavior||'');"
+                "node.style.overscrollBehavior='contain';"
+                "node.style.overscrollBehaviorY='contain';"
+            "}catch(e){}"
+        "}"
+        "function pfUnpinStyle(node){"
+            "try{"
+                "if(!node.hasAttribute(PF_PIN_STYLE)){return;}"
+                "node.style.overscrollBehavior=node.getAttribute(PF_PIN_STYLE)||'';"
+                "node.style.overscrollBehaviorY='';"
+                "node.removeAttribute(PF_PIN_STYLE);"
+            "}catch(e){}"
+        "}"
+        "function pfClearScrollPin(){"
+            "try{"
+                "var old=document.querySelectorAll('['+PF_PIN_ATTR+']');"
+                "for(var i=0;i<old.length;i++){"
+                    "pfUnpinStyle(old[i]);"
+                    "old[i].removeAttribute(PF_PIN_ATTR);"
+                "}"
+            "}catch(e){}"
+        "}"
+        "function pfActivateScrollAtPoint(px,py){"
+            "try{"
+                "pfClearScrollPin();"
+                "var el=null;"
+                "try{el=document.elementFromPoint(px,py);}catch(e){return '';}"
+                "if(!el){return '';}"
+                "var node=el;"
+                "for(var depth=0;node&&node.nodeType===1&&depth<40;depth++){"
+                    "if(node===document.body||node===document.documentElement){break;}"
+                    "var canY=node.scrollHeight>node.clientHeight+1;"
+                    "var canX=node.scrollWidth>node.clientWidth+1;"
+                    "if(canY||canX){"
+                        "var st=null;try{st=window.getComputedStyle(node);}catch(e){}"
+                        "var oy=st?(st.overflowY||''):'visible';"
+                        "var ox=st?(st.overflowX||''):'visible';"
+                        // Same rule as pfScrollAtPoint: overflow:hidden is accepted because many
+                        // site scrollers still honour a programmatic scrollTop.
+                        "if(canY&&oy!=='visible'){node.setAttribute(PF_PIN_ATTR,'y');pfPinStyle(node);return 'pinned';}"
+                        "if(canX&&ox!=='visible'){node.setAttribute(PF_PIN_ATTR,'x');pfPinStyle(node);return 'pinned';}"
+                    "}"
+                    "node=node.parentNode;"
+                "}"
+                "return '';"
+            "}catch(e){return '';}"
+        "}"
+        "function pfScrollPinned(dx,dy){"
+            "try{"
+                "var node=document.querySelector('['+PF_PIN_ATTR+']');"
+                "if(!node){return 'none';}"
+                "var bt=node.scrollTop,bl=node.scrollLeft;"
+                "if(dy&&node.scrollHeight>node.clientHeight+1){node.scrollTop=bt+dy;}"
+                "if(dx&&node.scrollWidth>node.clientWidth+1){node.scrollLeft=bl+dx;}"
+                "if(node.scrollTop!==bt||node.scrollLeft!==bl){return 'inner';}"
+                // Still pinned but already at the end of its travel: report 'edge' so the caller
+                // can fall through to the document instead of silently swallowing the press.
+                "return 'edge';"
+            "}catch(e){return 'none';}"
+        "}"
+        "window.__browserPfActivateScrollAtPoint=pfActivateScrollAtPoint;"
+        "window.__browserPfScrollPinned=pfScrollPinned;"
+        "window.__browserPfClearScrollPin=pfClearScrollPin;"
+
         "if(!window.__browserPfListenerInstalled){"
             "window.__browserPfListenerInstalled=true;"
             "window.addEventListener('message',function(ev){"
