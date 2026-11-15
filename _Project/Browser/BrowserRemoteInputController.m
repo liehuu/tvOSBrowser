@@ -231,6 +231,16 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         return;
     }
 
+    if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
+        // Fullscreen Select is handled synchronously in handlePressesEnded. Running a deferred
+        // page action here would toggle playback a second time 0.3 s later.
+        return;
+    }
+
+    if ([self.host browserRemoteInputControllerTogglePlaybackAtCursorPoint]) {
+        return;
+    }
+
     [self.host browserRemoteInputControllerHandlePrimaryAction];
 }
 
@@ -359,16 +369,18 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 
 #pragma mark - Arrow-key cursor movement
 
-// A tap must land on small targets, so the single-tap step is fine (was 48 pt on a 1920-wide
-// screen: only 40 positions across, which made many links unreachable). Holding still has to cover
-// the screen quickly, so the repeat step ramps up instead of the tap step being coarse.
 // Single-tap precision matters more than raw travel: 8 pt gives 240 landing positions across a
-// 1920-wide screen. Holding still has to cover the screen, so the repeat step ramps up instead.
+// 1920-wide screen, and the user confirmed 8 pt is right. Acceleration was too slow though: the
+// old ramp needed 60 repeats (~5.1 s) to reach 48 pt. Now it reaches 96 pt after 28 repeats
+// (~1.7 s at 0.06 s), so a hold crosses the screen quickly while a tap stays precise.
 static CGFloat const kBrowserCursorArrowStep = 8.0;
-static CGFloat const kBrowserCursorArrowStepRamp[4] = {8.0, 16.0, 28.0, 48.0};
-static NSInteger const kBrowserCursorArrowRampThresholds[3] = {12, 32, 60};
-static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.085;
+static CGFloat const kBrowserCursorArrowStepRamp[4] = {8.0, 20.0, 48.0, 96.0};
+static NSInteger const kBrowserCursorArrowRampThresholds[3] = {4, 12, 28};
+static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.06;
 static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
+// Scroll mode reuses the same timer but measures travel in page content, so its steps are larger.
+static CGFloat const kBrowserScrollArrowStep = 44.0;
+static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0};
 
 - (BOOL)isArrowPressType:(UIPressType)type {
     return type == UIPressTypeUpArrow ||
@@ -377,11 +389,10 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
            type == UIPressTypeRightArrow;
 }
 
-- (BOOL)canMoveCursorWithArrows {
-    if (!self.cursorModeEnabled) {
-        return NO;
-    }
-    // In pseudo fullscreen the arrows are playback controls, not cursor controls.
+- (BOOL)canUseArrowsForMovement {
+    // Fullscreen arrows are playback controls. In scroll mode the same arrows scroll the page, so
+    // cursorModeEnabled is deliberately NOT checked here: checking it used to make the arrows do
+    // nothing at all after switching to scroll mode.
     if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
         return NO;
     }
@@ -433,6 +444,16 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
     return YES;
 }
 
+- (CGPoint)scrollDeltaForPressType:(UIPressType)type step:(CGFloat)step {
+    switch (type) {
+        case UIPressTypeUpArrow:    return CGPointMake(0.0, -step);
+        case UIPressTypeDownArrow:  return CGPointMake(0.0,  step);
+        case UIPressTypeLeftArrow:  return CGPointMake(-step, 0.0);
+        case UIPressTypeRightArrow: return CGPointMake( step, 0.0);
+        default: return CGPointZero;
+    }
+}
+
 - (void)updateCursorImageForCurrentPosition {
     self.cursorView.image = BrowserDefaultCursor();
     if ([self.host browserRemoteInputControllerTabOverviewVisible] &&
@@ -450,12 +471,16 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
 - (void)beginCursorArrowRepeatWithPressType:(UIPressType)type {
     [self cancelCursorArrowRepeat];
 
-    if (![self canMoveCursorWithArrows]) {
+    if (![self canUseArrowsForMovement]) {
         return;
     }
 
     self.cursorArrowRepeatPressType = type;
-    [self moveCursorWithPressType:type];
+    if (self.cursorModeEnabled) {
+        [self moveCursorWithPressType:type];
+    } else {
+        [self applyManualScrollDelta:[self scrollDeltaForPressType:type step:kBrowserScrollArrowStep]];
+    }
 
     __block NSInteger repeatCount = 0;
     __weak typeof(self) weakSelf = self;
@@ -467,19 +492,31 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
         if (strongSelf == nil) {
             return;
         }
-        if (![strongSelf canMoveCursorWithArrows] ||
+        if (![strongSelf canUseArrowsForMovement] ||
             ++repeatCount > kBrowserCursorArrowMaxRepeats) {
             [strongSelf cancelCursorArrowRepeat];
             return;
         }
         // Ramp the step up while held: precise at first, fast once it is clearly a hold.
-        CGFloat step = kBrowserCursorArrowStep;
-        for (NSInteger i = 0; i < 3; i++) {
-            if (repeatCount > kBrowserCursorArrowRampThresholds[i]) {
-                step = kBrowserCursorArrowStepRamp[i + 1];
+        NSInteger i;
+        if (strongSelf.cursorModeEnabled) {
+            CGFloat step = kBrowserCursorArrowStep;
+            for (i = 0; i < 3; i++) {
+                if (repeatCount > kBrowserCursorArrowRampThresholds[i]) {
+                    step = kBrowserCursorArrowStepRamp[i + 1];
+                }
             }
+            [strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType step:step];
+        } else {
+            CGFloat step = kBrowserScrollArrowStep;
+            for (i = 0; i < 3; i++) {
+                if (repeatCount > kBrowserCursorArrowRampThresholds[i]) {
+                    step = kBrowserScrollArrowStepRamp[i + 1];
+                }
+            }
+            [strongSelf applyManualScrollDelta:[strongSelf scrollDeltaForPressType:strongSelf.cursorArrowRepeatPressType
+                                                                              step:step]];
         }
-        [strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType step:step];
     }];
 }
 
@@ -495,7 +532,7 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
 }
 
 - (void)handleArrowPressBegan:(UIPressType)type {
-    if (![self canMoveCursorWithArrows]) {
+    if (![self canUseArrowsForMovement]) {
         return;
     }
     if (self.cursorArrowRepeatTimer != nil && self.cursorArrowRepeatPressType == type) {
@@ -646,7 +683,7 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
 }
 
 - (BOOL)handleArrowPressEnded:(UIPressType)type {
-    if (![self canMoveCursorWithArrows]) {
+    if (![self canUseArrowsForMovement]) {
         [self cancelCursorArrowRepeat];
         return NO;
     }
@@ -664,8 +701,13 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
     BOOL didMove = YES;
     if (!hadRepeatTimer) {
         // Began phase never reached pressesBegan: treat this as a single tap step.
-        didMove = [self moveCursorWithPressType:type];
-        [self updateCursorImageForCurrentPosition];
+        if (self.cursorModeEnabled) {
+            didMove = [self moveCursorWithPressType:type];
+            [self updateCursorImageForCurrentPosition];
+        } else {
+            didMove = [self applyManualScrollDelta:[self scrollDeltaForPressType:type
+                                                                            step:kBrowserScrollArrowStep]];
+        }
         [self.host browserRemoteInputControllerPersistSession];
     }
 
@@ -767,9 +809,9 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
     if (press.type == UIPressTypeSelect) {
         self.lastDirectSelectPressTimestamp = CACurrentMediaTime();
         if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
-            // Fullscreen: a click reveals the playback HUD instead of clicking the page.
-            NSLog(@"[InputTrace][Root] fullscreen Select -> toggle playback HUD");
-            [self.host browserRemoteInputControllerTogglePlaybackHUD];
+            // Fullscreen: Select plays/pauses. Up/Down still reveal the timecode HUD.
+            NSLog(@"[InputTrace][Root] fullscreen Select -> toggle playback");
+            [self.host browserRemoteInputControllerTogglePlaybackPlayState];
             return YES;
         }
         [self handleSelectPressEnded];
