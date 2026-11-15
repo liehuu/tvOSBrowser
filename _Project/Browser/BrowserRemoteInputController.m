@@ -551,22 +551,24 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
         return NO;
     }
 
-    if ([self isArrowPressType:press.type]) {
-        if ([self handleArrowPressEnded:press.type]) {
-            return YES;
-        }
-    }
-
+    // A long press already ran its action; the release must not also fire the single-tap action
+    // (that would pop the alert we just presented, or open the URL entry sheet).
     if (press.type == UIPressTypePlayPause && self.playPauseLongPressConsumed) {
         self.playPauseLongPressConsumed = NO;
-        NSLog(@"[InputTrace][Root] swallow PlayPause tap after long press");
+        NSLog(@"[InputTrace][Root] swallow PlayPause release after long press");
         return YES;
     }
 
     if (press.type == UIPressTypeMenu && self.menuLongPressConsumed) {
         self.menuLongPressConsumed = NO;
-        NSLog(@"[InputTrace][Root] swallow Menu tap after long press");
+        NSLog(@"[InputTrace][Root] swallow Menu release after long press");
         return YES;
+    }
+
+    if ([self isArrowPressType:press.type]) {
+        if ([self handleArrowPressEnded:press.type]) {
+            return YES;
+        }
     }
 
     if (press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) {
