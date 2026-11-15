@@ -369,12 +369,13 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 
 #pragma mark - Arrow-key cursor movement
 
-// Single-tap precision matters more than raw travel: 8 pt gives 240 landing positions across a
-// 1920-wide screen, and the user confirmed 8 pt is right. Acceleration was too slow though: the
-// old ramp needed 60 repeats (~5.1 s) to reach 48 pt. Now it reaches 96 pt after 28 repeats
-// (~1.7 s at 0.06 s), so a hold crosses the screen quickly while a tap stays precise.
-static CGFloat const kBrowserCursorArrowStep = 8.0;
-static CGFloat const kBrowserCursorArrowStepRamp[4] = {8.0, 20.0, 48.0, 96.0};
+// Single-tap precision matters most for tiny controls: a close "x" can be a 12-16 px glyph inside
+// a div, so 8 pt still skipped over it. 4 pt doubles the landing positions across a 1920-wide
+// screen, and the DOM hit-test now also snaps to the nearest interactive element within 26 px.
+// Hold acceleration was confirmed good in build-14 and is deliberately unchanged: the ramp still
+// reaches 96 pt after 28 repeats (~1.7 s at 0.06 s) while a tap stays precise.
+static CGFloat const kBrowserCursorArrowStep = 4.0;
+static CGFloat const kBrowserCursorArrowStepRamp[4] = {4.0, 20.0, 48.0, 96.0};
 static NSInteger const kBrowserCursorArrowRampThresholds[3] = {4, 12, 28};
 static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.06;
 static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
