@@ -277,26 +277,26 @@ static BOOL const kBrowserYouTubeNativeExtractionEnabled = NO;
     if (sources.count > 0) {
         sourceSummary = [sources componentsJoinedByString:@"\n"];
     } else if (videoInfo.count > 0) {
-        sourceSummary = @"No direct media URL was exposed by the page.";
+        sourceSummary = @"页面未暴露直接的媒体地址。";
     } else {
-        sourceSummary = @"No video element was detected under the cursor.";
+        sourceSummary = @"光标下未检测到视频元素。";
     }
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Native Video Unavailable"
-                                                                             message:[NSString stringWithFormat:@"This page is not exposing a direct video URL that AVPlayer can open.\n\nDetected sources:\n%@", sourceSummary]
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"原生视频不可用"
+                                                                             message:[NSString stringWithFormat:@"此页面未提供 AVPlayer 可直接打开的视频地址。\n\n检测到的来源：\n%@", sourceSummary]
                                                                       preferredStyle:UIAlertControllerStyleAlert];
-    [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
     [self.host browserPresentViewController:alertController];
 }
 
 - (void)presentYouTubeExtractionError:(NSError *)error fallbackVideoInfo:(NSDictionary *)videoInfo {
-    NSString *message = error.localizedDescription ?: @"Could not extract a better YouTube playback URL.";
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"YouTube Extraction Failed"
+    NSString *message = error.localizedDescription ?: @"无法提取更合适的 YouTube 播放地址。";
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"YouTube 提取失败"
                                                                              message:message
                                                                       preferredStyle:UIAlertControllerStyleAlert];
     __weak typeof(self) weakSelf = self;
     NSString *fallbackURLString = [videoInfo[@"src"] isKindOfClass:[NSString class]] ? videoInfo[@"src"] : @"";
     if ([self isNativePlayableVideoURLString:fallbackURLString]) {
-        [alertController addAction:[UIAlertAction actionWithTitle:@"Play Current URL"
+        [alertController addAction:[UIAlertAction actionWithTitle:@"播放当前地址"
                                                             style:UIAlertActionStyleDefault
                                                           handler:^(__unused UIAlertAction *action) {
             NSURL *fallbackURL = [NSURL URLWithString:fallbackURLString];
@@ -304,7 +304,7 @@ static BOOL const kBrowserYouTubeNativeExtractionEnabled = NO;
             [weakSelf presentNativeVideoPlayerForURL:fallbackURL title:title];
         }]];
     }
-    [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [alertController addAction:[UIAlertAction actionWithTitle:@"好" style:UIAlertActionStyleCancel handler:nil]];
     [self.host browserPresentViewController:alertController];
 }
 
