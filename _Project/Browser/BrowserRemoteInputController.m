@@ -49,6 +49,8 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic, readwrite) UIImageView *cursorView;
 @property (nonatomic, readwrite) UIPanGestureRecognizer *manualScrollPanRecognizer;
 @property (nonatomic, readwrite) UITapGestureRecognizer *playPauseDoubleTapRecognizer;
+@property (nonatomic, readwrite) UILongPressGestureRecognizer *playPauseLongPressRecognizer;
+@property (nonatomic, readwrite) UILongPressGestureRecognizer *menuLongPressRecognizer;
 @property (nonatomic, readwrite, getter=isCursorModeEnabled) BOOL cursorModeEnabled;
 @property (nonatomic) CGPoint lastTouchLocation;
 @property (nonatomic) CADisplayLink *manualScrollDisplayLink;
@@ -58,8 +60,12 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic) CFTimeInterval lastDirectSelectPressTimestamp;
 @property (nonatomic) CFTimeInterval lastSelectPressTimestamp;
 @property (nonatomic) BOOL awaitingSecondSelectPress;
-@property (nonatomic) NSTimer *playPauseLongPressTimer;
-@property (nonatomic) BOOL playPauseLongPressFired;
+@property (nonatomic) NSTimer *cursorArrowRepeatTimer;
+@property (nonatomic) UIPressType cursorArrowRepeatPressType;
+@property (nonatomic) CFTimeInterval lastArrowEndedTimestamp;
+@property (nonatomic) UIPressType lastArrowEndedType;
+@property (nonatomic) BOOL playPauseLongPressConsumed;
+@property (nonatomic) BOOL menuLongPressConsumed;
 
 @end
 
@@ -82,6 +88,16 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         _playPauseDoubleTapRecognizer.numberOfTapsRequired = 2;
         _playPauseDoubleTapRecognizer.allowedPressTypes = @[@(UIPressTypePlayPause)];
         [rootView addGestureRecognizer:_playPauseDoubleTapRecognizer];
+
+        _playPauseLongPressRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handlePlayPauseLongPress:)];
+        _playPauseLongPressRecognizer.minimumPressDuration = 0.6;
+        _playPauseLongPressRecognizer.allowedPressTypes = @[@(UIPressTypePlayPause)];
+        [rootView addGestureRecognizer:_playPauseLongPressRecognizer];
+
+        _menuLongPressRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMenuLongPress:)];
+        _menuLongPressRecognizer.minimumPressDuration = 0.6;
+        _menuLongPressRecognizer.allowedPressTypes = @[@(UIPressTypeMenu)];
+        [rootView addGestureRecognizer:_menuLongPressRecognizer];
 
         _manualScrollPanRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleManualScrollPan:)];
         _manualScrollPanRecognizer.allowedTouchTypes = @[ @(UITouchTypeIndirect) ];
@@ -250,6 +266,55 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     [self.host browserRemoteInputControllerHandleAdvancedMenuPress];
 }
 
+// Long press Play/Pause => toggle pseudo fullscreen for the playing video.
+// Detected with a UILongPressGestureRecognizer because GCEventViewController does not
+// reliably deliver the PlayPause UIPressPhaseBegan to pressesBegan:.
+- (void)handlePlayPauseLongPress:(UILongPressGestureRecognizer *)sender {
+    if (sender.state != UIGestureRecognizerStateBegan) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerTopBarFocusActive]) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
+        return;
+    }
+    NSLog(@"[InputTrace][Root] long press PlayPause -> pseudo fullscreen");
+    self.playPauseLongPressConsumed = YES;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
+    [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
+    [self.host browserRemoteInputControllerHandlePseudoFullscreenPress];
+}
+
+// Long press Menu => favorites / bookmark switcher (single Menu press stays "back").
+- (void)handleMenuLongPress:(UILongPressGestureRecognizer *)sender {
+    if (sender.state != UIGestureRecognizerStateBegan) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerTopBarFocusActive]) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
+        return;
+    }
+    if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
+        return;
+    }
+    NSLog(@"[InputTrace][Root] long press Menu -> favorites");
+    self.menuLongPressConsumed = YES;
+    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
+    [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
+    [self.host browserRemoteInputControllerHandleFavoritesPress];
+}
+
+- (void)clearLongPressConsumedFlags {
+    self.playPauseLongPressConsumed = NO;
+    self.menuLongPressConsumed = NO;
+}
+
 - (void)handleManualScrollPan:(UIPanGestureRecognizer *)gestureRecognizer {
     if (self.cursorModeEnabled ||
         [self.host browserRemoteInputControllerTabOverviewVisible] ||
@@ -292,50 +357,191 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
               BrowserPressPhaseString(press.phase),
               [self.host browserRemoteInputControllerPresentedViewController] == nil ? @"(nil)" : NSStringFromClass([[self.host browserRemoteInputControllerPresentedViewController] class]));
     }
-    if (press != nil && press.type == UIPressTypePlayPause) {
-        [self beginPlayPauseLongPressWindow];
+    if (press != nil && [self isArrowPressType:press.type]) {
+        [self handleArrowPressBegan:press.type];
     }
     (void)event;
 }
 
-#pragma mark - Play/Pause long press
+#pragma mark - Arrow-key cursor movement
 
-- (void)beginPlayPauseLongPressWindow {
-    [self cancelPlayPauseLongPressWindow];
-    self.playPauseLongPressFired = NO;
+static CGFloat const kBrowserCursorArrowStep = 48.0;
+static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.09;
+static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
 
+- (BOOL)isArrowPressType:(UIPressType)type {
+    return type == UIPressTypeUpArrow ||
+           type == UIPressTypeDownArrow ||
+           type == UIPressTypeLeftArrow ||
+           type == UIPressTypeRightArrow;
+}
+
+- (BOOL)canMoveCursorWithArrows {
+    if (!self.cursorModeEnabled) {
+        return NO;
+    }
     if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
-        return;
+        return NO;
     }
     if ([self.host browserRemoteInputControllerTopBarFocusActive]) {
-        return;
+        return NO;
     }
     if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)moveCursorWithPressType:(UIPressType)type {
+    CGRect bounds = self.rootView.bounds;
+    CGRect rect = self.cursorView.frame;
+    CGFloat step = kBrowserCursorArrowStep;
+
+    switch (type) {
+        case UIPressTypeUpArrow:
+            rect.origin.y -= step;
+            break;
+        case UIPressTypeDownArrow:
+            rect.origin.y += step;
+            break;
+        case UIPressTypeLeftArrow:
+            rect.origin.x -= step;
+            break;
+        case UIPressTypeRightArrow:
+            rect.origin.x += step;
+            break;
+        default:
+            return NO;
+    }
+
+    CGFloat maxX = MAX(0.0, CGRectGetWidth(bounds) - CGRectGetWidth(rect));
+    CGFloat maxY = MAX(0.0, CGRectGetHeight(bounds) - CGRectGetHeight(rect));
+    rect.origin.x = MIN(MAX(rect.origin.x, 0.0), maxX);
+    rect.origin.y = MIN(MAX(rect.origin.y, 0.0), maxY);
+    if (CGRectEqualToRect(rect, self.cursorView.frame)) {
+        return NO;
+    }
+    self.cursorView.frame = rect;
+    return YES;
+}
+
+- (void)updateCursorImageForCurrentPosition {
+    self.cursorView.image = BrowserDefaultCursor();
+    if ([self.host browserRemoteInputControllerTabOverviewVisible] &&
+        [self.host browserRemoteInputControllerTabOverviewContainsPoint:self.cursorView.frame.origin]) {
+        self.cursorView.image = BrowserPointerCursor();
         return;
     }
 
+    NSString *hoverState = [self.host browserRemoteInputControllerHoverStateAtCursorPoint:self.cursorView.frame.origin];
+    if ([hoverState isEqualToString:@"true"]) {
+        self.cursorView.image = BrowserPointerCursor();
+    }
+}
+
+- (void)beginCursorArrowRepeatWithPressType:(UIPressType)type {
+    [self cancelCursorArrowRepeat];
+
+    if (![self canMoveCursorWithArrows]) {
+        return;
+    }
+
+    self.cursorArrowRepeatPressType = type;
+    [self moveCursorWithPressType:type];
+
+    __block NSInteger repeatCount = 0;
     __weak typeof(self) weakSelf = self;
-    self.playPauseLongPressTimer = [NSTimer scheduledTimerWithTimeInterval:0.7
-                                                                  repeats:NO
+    self.cursorArrowRepeatTimer = [NSTimer scheduledTimerWithTimeInterval:kBrowserCursorArrowRepeatInterval
+                                                                  repeats:YES
                                                                     block:^(NSTimer *timer) {
         (void)timer;
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
         }
-        strongSelf.playPauseLongPressTimer = nil;
-        if ([strongSelf.host browserRemoteInputControllerPresentedViewController] != nil) {
+        if (![strongSelf canMoveCursorWithArrows] ||
+            ++repeatCount > kBrowserCursorArrowMaxRepeats) {
+            [strongSelf cancelCursorArrowRepeat];
             return;
         }
-        strongSelf.playPauseLongPressFired = YES;
-        NSLog(@"[InputTrace][Root] playPause long press fired");
-        [strongSelf.host browserRemoteInputControllerHandlePseudoFullscreenPress];
+        [strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType];
     }];
 }
 
-- (void)cancelPlayPauseLongPressWindow {
-    [self.playPauseLongPressTimer invalidate];
-    self.playPauseLongPressTimer = nil;
+- (void)cancelCursorArrowRepeat {
+    BOOL hadRepeatTimer = (self.cursorArrowRepeatTimer != nil);
+    [self.cursorArrowRepeatTimer invalidate];
+    self.cursorArrowRepeatTimer = nil;
+    self.cursorArrowRepeatPressType = (UIPressType)-1;
+    if (hadRepeatTimer) {
+        [self updateCursorImageForCurrentPosition];
+        [self.host browserRemoteInputControllerPersistSession];
+    }
+}
+
+- (void)handleArrowPressBegan:(UIPressType)type {
+    if (![self canMoveCursorWithArrows]) {
+        return;
+    }
+    if (self.cursorArrowRepeatTimer != nil && self.cursorArrowRepeatPressType == type) {
+        return;
+    }
+    [self beginCursorArrowRepeatWithPressType:type];
+}
+
+// Entry point used by the UIApplication sendEvent: bridge. tvOS routes arrow presses to the
+// focus engine first, so pressesBegan: alone is not a reliable source for them.
+- (void)handleGlobalArrowPressType:(UIPressType)type began:(BOOL)began {
+    if (![self isArrowPressType:type]) {
+        return;
+    }
+    if (began) {
+        [self handleArrowPressBegan:type];
+    } else {
+        [self handleArrowPressEnded:type];
+    }
+}
+
+- (BOOL)handleArrowPressEnded:(UIPressType)type {
+    if (![self canMoveCursorWithArrows]) {
+        [self cancelCursorArrowRepeat];
+        return NO;
+    }
+
+    // Both the native press channel and the sendEvent: bridge report this; drop the duplicate.
+    CFTimeInterval now = CACurrentMediaTime();
+    if (self.lastArrowEndedType == type && (now - self.lastArrowEndedTimestamp) < 0.05) {
+        return YES;
+    }
+    self.lastArrowEndedType = type;
+    self.lastArrowEndedTimestamp = now;
+
+    BOOL hadRepeatTimer = (self.cursorArrowRepeatTimer != nil);
+    [self cancelCursorArrowRepeat];
+    BOOL didMove = YES;
+    if (!hadRepeatTimer) {
+        // Began phase never reached pressesBegan: treat this as a single tap step.
+        didMove = [self moveCursorWithPressType:type];
+        [self updateCursorImageForCurrentPosition];
+        [self.host browserRemoteInputControllerPersistSession];
+    }
+
+    NSLog(@"[InputTrace][Root] arrow ended type=%@ cursor=(%.0f,%.0f) moved=%@",
+          BrowserPressTypeString(type),
+          self.cursorView.frame.origin.x,
+          self.cursorView.frame.origin.y,
+          didMove ? @"YES" : @"NO");
+
+    // The cursor already sits at the top edge and Up cannot move it any further:
+    // hand that edge case back to the top navigation bar so its old shortcut still works.
+    if (type == UIPressTypeUpArrow &&
+        !didMove &&
+        CGRectGetMinY(self.cursorView.frame) <= 0.5 &&
+        [self.host browserRemoteInputControllerCanActivateTopBarFocus]) {
+        NSLog(@"[InputTrace][Root] Up at top edge -> activate top bar focus");
+        [self.host browserRemoteInputControllerActivateTopBarFocus];
+    }
+    return YES;
 }
 
 - (BOOL)handlePressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
@@ -345,13 +551,22 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         return NO;
     }
 
-    if (press.type == UIPressTypePlayPause) {
-        BOOL longPressFired = self.playPauseLongPressFired;
-        [self cancelPlayPauseLongPressWindow];
-        self.playPauseLongPressFired = NO;
-        if (longPressFired) {
+    if ([self isArrowPressType:press.type]) {
+        if ([self handleArrowPressEnded:press.type]) {
             return YES;
         }
+    }
+
+    if (press.type == UIPressTypePlayPause && self.playPauseLongPressConsumed) {
+        self.playPauseLongPressConsumed = NO;
+        NSLog(@"[InputTrace][Root] swallow PlayPause tap after long press");
+        return YES;
+    }
+
+    if (press.type == UIPressTypeMenu && self.menuLongPressConsumed) {
+        self.menuLongPressConsumed = NO;
+        NSLog(@"[InputTrace][Root] swallow Menu tap after long press");
+        return YES;
     }
 
     if (press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) {
@@ -401,12 +616,6 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     if (press.type == UIPressTypeSelect) {
         self.lastDirectSelectPressTimestamp = CACurrentMediaTime();
         [self handleSelectPressEnded];
-        return YES;
-    }
-
-    if (press.type == UIPressTypeUpArrow &&
-        [self.host browserRemoteInputControllerCanActivateTopBarFocus]) {
-        [self.host browserRemoteInputControllerActivateTopBarFocus];
         return YES;
     }
 
