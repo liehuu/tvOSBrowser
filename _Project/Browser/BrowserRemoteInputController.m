@@ -542,7 +542,16 @@ static CGFloat const kBrowserEdgeScrollStepRamp[4] = {160.0, 300.0, 480.0, 700.0
                     step = kBrowserCursorArrowStepRamp[i + 1];
                 }
             }
-            if (![strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType step:step]) {
+            // build-17: a held arrow pages the page (or the inner list under the cursor) even while
+            // the pointer is still mid-screen. Requiring the pointer to reach the edge first meant
+            // paging only worked after a double-Select mode switch, which users reported as
+            // unreliable. The cursor keeps moving as well, so aiming and paging are not exclusive;
+            // a single tap still only nudges the cursor by 4 pt, so precision is unchanged.
+            BOOL didMoveCursor = [strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType step:step];
+            BOOL isPagingDirection = (strongSelf.cursorArrowRepeatPressType == UIPressTypeUpArrow ||
+                                      strongSelf.cursorArrowRepeatPressType == UIPressTypeDownArrow);
+            if (!didMoveCursor ||
+                (isPagingDirection && repeatCount > kBrowserCursorArrowRampThresholds[0])) {
                 [strongSelf scrollPageAtCursorEdgeForPressType:strongSelf.cursorArrowRepeatPressType
                                                   repeatCount:repeatCount];
             }
