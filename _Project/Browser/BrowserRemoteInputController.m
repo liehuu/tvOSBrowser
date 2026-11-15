@@ -64,6 +64,17 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic) UIPressType lastArrowEndedType;
 @property (nonatomic) BOOL playPauseLongPressConsumed;
 @property (nonatomic) BOOL menuLongPressConsumed;
+@property (nonatomic) BOOL selectLongPressConsumed;
+@property (nonatomic) CFTimeInterval lastSelectLongPressTimestamp;
+// Tiered seek in pseudo fullscreen: 1 tap = 10 s, 2 taps = 60 s, 3+ taps = 300 s.
+@property (nonatomic) NSInteger seekTapCount;
+@property (nonatomic) double seekTapDirection;
+@property (nonatomic) CFTimeInterval seekPressBeganTimestamp;
+@property (nonatomic) BOOL seekHoldActive;
+@property (nonatomic) NSTimer *seekTapWindowTimer;
+
+- (void)handleFullscreenSeekPressWithDirection:(double)direction began:(BOOL)began;
+- (void)resetSeekTapSeries;
 
 @end
 
@@ -254,10 +265,12 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     [self.host browserRemoteInputControllerHandleAdvancedMenuPress];
 }
 
-// Long press Play/Pause (pseudo fullscreen) and long press Menu (favorites) are detected in the
-// UIApplication sendEvent: bridge: GCEventViewController hands those buttons to the GameController
-// framework, so no UILongPressGestureRecognizer ever fires for them. The bridge posts
+// Long press Play/Pause or Select (pseudo fullscreen) is detected in the UIApplication sendEvent:
+// bridge: GCEventViewController hands those buttons to the GameController framework, so no
+// UILongPressGestureRecognizer ever fires for them. The bridge posts
 // BrowserGlobalLongPressNotification, routed to here.
+// Select is accepted because remotes without a Play/Pause key (learning remotes) otherwise have no
+// way to reach fullscreen at all; that was reported on device.
 - (void)handleGlobalLongPressType:(UIPressType)type {
     if ([self.host browserRemoteInputControllerTopBarFocusActive]) {
         NSLog(@"[LongPress] ignored type=%@ (top bar focused)", BrowserPressTypeString(type));
@@ -272,11 +285,16 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         return;
     }
 
-    if (type == UIPressTypePlayPause) {
-        NSLog(@"[LongPress] PlayPause -> pseudo fullscreen");
-        self.playPauseLongPressConsumed = YES;
+    if (type == UIPressTypePlayPause || type == UIPressTypeSelect) {
+        NSLog(@"[LongPress] %@ -> pseudo fullscreen", BrowserPressTypeString(type));
+        if (type == UIPressTypePlayPause) {
+            self.playPauseLongPressConsumed = YES;
+        } else {
+            self.selectLongPressConsumed = YES;
+            self.lastSelectLongPressTimestamp = CACurrentMediaTime();
+        }
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
-        [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
+        [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.5];
         [self.host browserRemoteInputControllerHandlePseudoFullscreenPress];
         return;
     }
@@ -285,7 +303,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         NSLog(@"[LongPress] Menu -> favorites");
         self.menuLongPressConsumed = YES;
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
-        [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
+        [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.5];
         [self.host browserRemoteInputControllerHandleFavoritesPress];
     }
 }
@@ -293,6 +311,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 - (void)clearLongPressConsumedFlags {
     self.playPauseLongPressConsumed = NO;
     self.menuLongPressConsumed = NO;
+    self.selectLongPressConsumed = NO;
 }
 
 - (void)handleManualScrollPan:(UIPanGestureRecognizer *)gestureRecognizer {
@@ -345,9 +364,14 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 
 #pragma mark - Arrow-key cursor movement
 
-static CGFloat const kBrowserCursorArrowStep = 48.0;
-static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.09;
-static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
+// A tap must land on small targets, so the single-tap step is fine (was 48 pt on a 1920-wide
+// screen: only 40 positions across, which made many links unreachable). Holding still has to cover
+// the screen quickly, so the repeat step ramps up instead of the tap step being coarse.
+static CGFloat const kBrowserCursorArrowStep = 16.0;
+static CGFloat const kBrowserCursorArrowStepRamp[4] = {16.0, 28.0, 44.0, 64.0};
+static NSInteger const kBrowserCursorArrowRampThresholds[3] = {10, 26, 48};
+static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.075;
+static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
 
 - (BOOL)isArrowPressType:(UIPressType)type {
     return type == UIPressTypeUpArrow ||
@@ -377,9 +401,12 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
 }
 
 - (BOOL)moveCursorWithPressType:(UIPressType)type {
+    return [self moveCursorWithPressType:type step:kBrowserCursorArrowStep];
+}
+
+- (BOOL)moveCursorWithPressType:(UIPressType)type step:(CGFloat)step {
     CGRect bounds = self.rootView.bounds;
     CGRect rect = self.cursorView.frame;
-    CGFloat step = kBrowserCursorArrowStep;
 
     switch (type) {
         case UIPressTypeUpArrow:
@@ -448,7 +475,14 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
             [strongSelf cancelCursorArrowRepeat];
             return;
         }
-        [strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType];
+        // Ramp the step up while held: precise at first, fast once it is clearly a hold.
+        CGFloat step = kBrowserCursorArrowStep;
+        for (NSInteger i = 0; i < 3; i++) {
+            if (repeatCount > kBrowserCursorArrowRampThresholds[i]) {
+                step = kBrowserCursorArrowStepRamp[i + 1];
+            }
+        }
+        [strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType step:step];
     }];
 }
 
@@ -497,10 +531,10 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
 - (void)handlePseudoFullscreenArrowPressType:(UIPressType)type began:(BOOL)began {
     switch (type) {
         case UIPressTypeLeftArrow:
-            [self.host browserRemoteInputControllerSeekBySeconds:-10.0 began:began];
+            [self handleFullscreenSeekPressWithDirection:-1.0 began:began];
             return;
         case UIPressTypeRightArrow:
-            [self.host browserRemoteInputControllerSeekBySeconds:10.0 began:began];
+            [self handleFullscreenSeekPressWithDirection:1.0 began:began];
             return;
         case UIPressTypeUpArrow:
         case UIPressTypeDownArrow:
@@ -513,6 +547,105 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
         default:
             return;
     }
+}
+
+// Tiered seek, exactly as requested: 1 tap = 10 s, 2 taps = 1 min, 3 taps = 5 min.
+// The step is applied on release and grows by the difference to the previous tier, so the first tap
+// gives immediate feedback instead of waiting for the tap window to close:
+//   tap 1 -> +10 s, tap 2 -> +50 s more (total 1 min), tap 3 -> +240 s more (total 5 min).
+// Holding the key keeps the old continuous seek, which starts after kBrowserSeekHoldThreshold.
+static double const kBrowserSeekTiers[4] = {0.0, 10.0, 60.0, 300.0};
+static CFTimeInterval const kBrowserSeekTapWindow = 0.6;
+static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
+
+- (void)handleFullscreenSeekPressWithDirection:(double)direction began:(BOOL)began {
+    if (began) {
+        // A press in the opposite direction starts a fresh series instead of extending it.
+        if (self.seekTapDirection != 0.0 && self.seekTapDirection != direction) {
+            [self resetSeekTapSeries];
+        }
+        self.seekTapDirection = direction;
+        self.seekPressBeganTimestamp = CACurrentMediaTime();
+
+        __weak typeof(self) weakSelf = self;
+        CFTimeInterval beganAt = self.seekPressBeganTimestamp;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kBrowserSeekHoldThreshold * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            // Still down, same press, same direction: this is a hold, not a tap.
+            if (beganAt <= 0.0 || strongSelf.seekPressBeganTimestamp != beganAt) {
+                return;
+            }
+            if (strongSelf.seekTapDirection != direction) {
+                return;
+            }
+            NSLog(@"[InputTrace][Root] fullscreen seek hold direction=%.0f", direction);
+            strongSelf.seekHoldActive = YES;
+            strongSelf.seekTapCount = 0;
+            [strongSelf.host browserRemoteInputControllerSeekBySeconds:(direction * kBrowserSeekTiers[1])
+                                                                 began:YES];
+        });
+        return;
+    }
+
+    if (self.seekPressBeganTimestamp <= 0.0) {
+        return;
+    }
+    self.seekPressBeganTimestamp = 0.0;
+
+    if (self.seekHoldActive) {
+        self.seekHoldActive = NO;
+        [self resetSeekTapSeries];
+        [self.host browserRemoteInputControllerSeekBySeconds:0.0 began:NO];
+        return;
+    }
+
+    self.seekTapCount += 1;
+    if (self.seekTapCount > 3) {
+        // A fourth quick tap starts a new series rather than silently capping at 5 minutes.
+        self.seekTapCount = 1;
+    }
+
+    NSInteger count = self.seekTapCount;
+    double cumulative = kBrowserSeekTiers[count];
+    double previous = kBrowserSeekTiers[count - 1];
+    double increment = cumulative - previous;
+
+    NSLog(@"[InputTrace][Root] fullscreen seek taps=%ld increment=%.0f cumulative=%.0f",
+          (long)count, increment, cumulative);
+    [self.host browserRemoteInputControllerApplySeekDelta:(direction * increment)
+                                         displayedSeconds:cumulative
+                                                 tapCount:count];
+
+    // Restart the window: another tap this soon extends the series, otherwise it ends here.
+    [self.seekTapWindowTimer invalidate];
+    __weak typeof(self) weakSelf = self;
+    self.seekTapWindowTimer = [NSTimer scheduledTimerWithTimeInterval:kBrowserSeekTapWindow
+                                                              repeats:NO
+                                                                block:^(NSTimer *timer) {
+        (void)timer;
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [strongSelf resetSeekTapSeries];
+    }];
+}
+
+- (void)resetSeekTapSeries {
+    [self.seekTapWindowTimer invalidate];
+    self.seekTapWindowTimer = nil;
+    self.seekTapCount = 0;
+    self.seekTapDirection = 0.0;
+    self.seekPressBeganTimestamp = 0.0;
+    self.seekHoldActive = NO;
+}
+
+- (void)resetPseudoFullscreenSeekState {
+    [self resetSeekTapSeries];
 }
 
 - (BOOL)handleArrowPressEnded:(UIPressType)type {
@@ -569,6 +702,14 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
     if (press.type == UIPressTypePlayPause && self.playPauseLongPressConsumed) {
         self.playPauseLongPressConsumed = NO;
         NSLog(@"[InputTrace][Root] swallow PlayPause release after long press");
+        return YES;
+    }
+
+    // Select held down = fullscreen. Swallowing the release is what stops the click from also
+    // happening (and, in fullscreen, from immediately re-toggling the HUD).
+    if (press.type == UIPressTypeSelect && self.selectLongPressConsumed) {
+        self.selectLongPressConsumed = NO;
+        NSLog(@"[InputTrace][Root] swallow Select release after long press");
         return YES;
     }
 
