@@ -445,6 +445,185 @@ static NSString *BrowserYouTubeRequestCaptureScript(void) {
     "})();";
 }
 
+NSString * const BrowserPseudoFullscreenRequestNotification = @"BrowserPseudoFullscreenRequestNotification";
+NSString * const BrowserPseudoFullscreenRequestEnterKey = @"enter";
+
+static NSMutableArray *BrowserScriptMessageHandlerRetainer(void) {
+    static NSMutableArray *handlers = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        handlers = [NSMutableArray array];
+    });
+    return handlers;
+}
+
+// WKScriptMessageHandler implemented at runtime: we cannot import WebKit headers here, so the
+// class is built with the ObjC runtime and forwards the page's fullscreen request as a notification.
+static void BrowserPseudoFullscreenMessageReceived(id self, SEL _cmd, id userContentController, id message) {
+    (void)self;
+    (void)_cmd;
+    (void)userContentController;
+    if (message == nil) {
+        return;
+    }
+
+    id body = nil;
+    SEL bodySelector = NSSelectorFromString(@"body");
+    if ([message respondsToSelector:bodySelector]) {
+        body = ((id (*)(id, SEL))objc_msgSend)(message, bodySelector);
+    }
+    NSString *action = [body isKindOfClass:[NSString class]] ? (NSString *)body : @"";
+    BOOL enter = ![action isEqualToString:@"exit"];
+    NSLog(@"[PseudoFullscreen] page request action=%@ enter=%@", action, enter ? @"YES" : @"NO");
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:BrowserPseudoFullscreenRequestNotification
+                                                            object:nil
+                                                          userInfo:@{BrowserPseudoFullscreenRequestEnterKey: @(enter)}];
+    });
+}
+
+static Class BrowserScriptMessageHandlerClass(void) {
+    static Class handlerClass = Nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        handlerClass = objc_allocateClassPair([NSObject class], "BrowserPseudoFullscreenMessageHandler", 0);
+        if (handlerClass == Nil) {
+            return;
+        }
+        SEL selector = NSSelectorFromString(@"userContentController:didReceiveScriptMessage:");
+        class_addMethod(handlerClass,
+                        selector,
+                        (IMP)BrowserPseudoFullscreenMessageReceived,
+                        "v@:@@");
+        objc_registerClassPair(handlerClass);
+    });
+    return handlerClass;
+}
+
+static NSString * const kBrowserPseudoFullscreenMessageName = @"browserPseudoFullscreen";
+
+// Hijack the page's own fullscreen API so tapping the site's fullscreen button routes to the
+// app's pseudo-fullscreen styling instead of WebKit's native fullscreen container.
+// The native container lives in a separate window above the app, which buries the cursor view
+// and always keeps the browser chrome visible.
+static NSString *BrowserFullscreenInterceptScript(void) {
+    NSString *source =
+    @"(function(){"
+        "if(window.__browserFullscreenHijacked){return;}"
+        "window.__browserFullscreenHijacked=true;"
+        "var MSG='__BROWSER_PF_MSG__';"
+        "function post(enter){"
+            "try{"
+                "if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers[MSG]){"
+                    "window.webkit.messageHandlers[MSG].postMessage(enter?'enter':'exit');"
+                    "return true;"
+                "}"
+            "}catch(e){}"
+            "return false;"
+        "}"
+        "function block(fn){"
+            "return function(){"
+                "post(fn);"
+                "return Promise.resolve();"
+            "};"
+        "}"
+        "try{"
+            "if(window.Element&&Element.prototype){"
+                "Element.prototype.requestFullscreen=block('enter');"
+                "Element.prototype.webkitRequestFullscreen=block('enter');"
+                "Element.prototype.webkitRequestFullScreen=block('enter');"
+                "Element.prototype.mozRequestFullScreen=block('enter');"
+                "Element.prototype.msRequestFullscreen=block('enter');"
+            "}"
+        "}catch(e){}"
+        "try{"
+            "if(window.HTMLVideoElement&&HTMLVideoElement.prototype){"
+                "HTMLVideoElement.prototype.webkitEnterFullscreen=function(){"
+                    "post('enter');"
+                "};"
+                "HTMLVideoElement.prototype.webkitEnterFullScreen=function(){"
+                    "post('enter');"
+                "};"
+                "HTMLVideoElement.prototype.webkitExitFullscreen=function(){"
+                    "post('exit');"
+                "};"
+            "}"
+        "}catch(e){}"
+        "try{"
+            "if(window.Document&&Document.prototype){"
+                "Object.defineProperty(Document.prototype,'fullscreenEnabled',{configurable:true,get:function(){return true;}});"
+                "Object.defineProperty(Document.prototype,'webkitFullscreenEnabled',{configurable:true,get:function(){return true;}});"
+                "Object.defineProperty(Document.prototype,'fullscreenElement',{configurable:true,get:function(){return null;}});"
+                "Object.defineProperty(Document.prototype,'webkitFullscreenElement',{configurable:true,get:function(){return null;}});"
+                "Document.prototype.exitFullscreen=block('exit');"
+                "Document.prototype.webkitExitFullscreen=block('exit');"
+            "}"
+        "}catch(e){}"
+        "document.addEventListener('webkitfullscreenchange',function(ev){ev.stopImmediatePropagation();},true);"
+        "document.addEventListener('fullscreenchange',function(ev){ev.stopImmediatePropagation();},true);"
+    "})();";
+
+    return [source stringByReplacingOccurrencesOfString:@"__BROWSER_PF_MSG__"
+                                             withString:kBrowserPseudoFullscreenMessageName];
+}
+
+static void BrowserInstallFullscreenInterceptUserScript(id configuration) {
+    if (configuration == nil) {
+        return;
+    }
+
+    Class userScriptClass = NSClassFromString(kBrowserUserScriptClassName);
+    if (userScriptClass == Nil) {
+        return;
+    }
+
+    SEL userContentControllerGetter = NSSelectorFromString(@"userContentController");
+    SEL setUserContentControllerSelector = NSSelectorFromString(@"setUserContentController:");
+    SEL addUserScriptSelector = NSSelectorFromString(@"addUserScript:");
+    SEL userScriptInitializer = NSSelectorFromString(@"initWithSource:injectionTime:forMainFrameOnly:");
+    if (![configuration respondsToSelector:userContentControllerGetter] ||
+        ![configuration respondsToSelector:setUserContentControllerSelector] ||
+        ![userScriptClass instancesRespondToSelector:userScriptInitializer]) {
+        return;
+    }
+
+    Class userContentControllerClass = NSClassFromString(kBrowserUserContentControllerClassName);
+    id userContentController = ((id (*)(id, SEL))objc_msgSend)(configuration, userContentControllerGetter);
+    if (userContentController == nil && userContentControllerClass != Nil) {
+        userContentController = ((id (*)(id, SEL))objc_msgSend)((id)userContentControllerClass, @selector(new));
+        ((void (*)(id, SEL, id))objc_msgSend)(configuration, setUserContentControllerSelector, userContentController);
+    }
+    if (userContentController == nil || ![userContentController respondsToSelector:addUserScriptSelector]) {
+        return;
+    }
+
+    id userScript = ((id (*)(id, SEL))objc_msgSend)((id)userScriptClass, @selector(alloc));
+    // WKUserScriptInjectionTimeAtDocumentStart == 0, forMainFrameOnly:NO so iframes get it too.
+    userScript = ((id (*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)(userScript,
+                                                                     userScriptInitializer,
+                                                                     BrowserFullscreenInterceptScript(),
+                                                                     0,
+                                                                     NO);
+    if (userScript != nil) {
+        ((void (*)(id, SEL, id))objc_msgSend)(userContentController, addUserScriptSelector, userScript);
+    }
+
+    // Register the message handler so the injected script can talk back to native.
+    SEL addHandlerSelector = NSSelectorFromString(@"addScriptMessageHandler:name:");
+    Class handlerClass = BrowserScriptMessageHandlerClass();
+    if (handlerClass != Nil && [userContentController respondsToSelector:addHandlerSelector]) {
+        id handler = ((id (*)(id, SEL))objc_msgSend)((id)handlerClass, @selector(new));
+        if (handler != nil) {
+            [BrowserScriptMessageHandlerRetainer() addObject:handler];
+            ((void (*)(id, SEL, id, id))objc_msgSend)(userContentController,
+                                                      addHandlerSelector,
+                                                      handler,
+                                                      kBrowserPseudoFullscreenMessageName);
+        }
+    }
+}
+
 static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     if (configuration == nil) {
         return;
@@ -534,6 +713,7 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(configuration, allowsInlineMediaPlaybackSelector, allowsInlineMediaPlayback);
     }
     BrowserConfigurePrivateMediaPreferences(configuration);
+    BrowserInstallFullscreenInterceptUserScript(configuration);
     BrowserInstallYouTubeCaptureUserScript(configuration);
 
     id webViewObject = ((id (*)(id, SEL))objc_msgSend)((id)webViewClass, @selector(alloc));
