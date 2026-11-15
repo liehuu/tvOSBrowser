@@ -23,6 +23,11 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)browserRemoteInputControllerHandleFavoritesPress;
 - (BOOL)browserRemoteInputControllerPseudoFullscreenActive;
 - (void)browserRemoteInputControllerSeekBySeconds:(double)delta began:(BOOL)began;
+// Tiered seek: delta is the increment to apply now; displayedSeconds is the cumulative step the tap
+// series has reached (10 / 60 / 300) and is what the HUD shows; tapCount is how many taps so far.
+- (void)browserRemoteInputControllerApplySeekDelta:(double)delta
+                                  displayedSeconds:(double)displayedSeconds
+                                          tapCount:(NSInteger)tapCount;
 - (void)browserRemoteInputControllerTogglePlaybackHUD;
 - (void)browserRemoteInputControllerTogglePlaybackPlayState;
 - (void)browserRemoteInputControllerHandleAdvancedMenuPress;
@@ -47,6 +52,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)handleGlobalSelectPressEndedNotification;
 - (void)handleGlobalArrowPressType:(UIPressType)type began:(BOOL)began;
 - (void)handleGlobalLongPressType:(UIPressType)type;
+// Clears any half-finished seek tap series (called when fullscreen ends, so a stale window cannot
+// extend a series into normal browsing).
+- (void)resetPseudoFullscreenSeekState;
 - (void)handlePressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event;
 - (BOOL)handlePressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event;
 - (BOOL)handleTouchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
