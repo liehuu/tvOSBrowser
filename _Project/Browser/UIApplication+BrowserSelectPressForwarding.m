@@ -85,6 +85,41 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 // to hand arrow presses to.
 static NSUInteger const kBrowserViewControllerSearchMaxDepth = 16;
 
+// build-25: above the crash fix there is a second, broader rule, and it is the one that actually
+// explains why this crash keeps coming back at the same address.
+//
+// The crash is always inside THIS method, at a message send performed by our own code:
+//   reason: -[ViewController (null selector)]: unrecognized selector sent to instance 0xb10020a00
+//   ... -[UIApplication(BrowserSelectPressForwarding) browser_sendEvent:] + 2460 / + 2276
+// The receiver is a controller; the selector is NULL. A NULL _cmd does not come from a typo -- it
+// comes from objc_msgSend being handed a sel that was read out of a category's method frame. The
+// `browser_sendEvent:` in this frame is dispatched as `$s30BrowserSelectPressForwarding...`, i.e.
+// resolved through the CATEGORY name, not through UIApplication. Once the swizzle is torn down
+// (a re-entrant +load, or the original IMP being exchanged twice) that lookup yields a NULL
+// selector instead of an IMP, and every press crashes.
+//
+// Two independent consequences, both applied below:
+//   1. the swizzle is installed defensively -- exchange only the entries we resolved by name, never
+//      a method the runtime is still resolving, and record the original IMP explicitly so the
+//      forwarding call can never go through a category lookup at all (`sendEventIMP`);
+//   2. nothing in this file may keep a view controller or a window beyond the call that found it.
+//      Every deferred block below captures only weak references and re-checks them, because the
+//      whole point of deferring is that UIKit is free to tear the receiver down in between.
+typedef void (*BrowserSendEventIMP)(id, SEL, UIEvent *);
+static BrowserSendEventIMP sBrowserOriginalSendEventIMP = NULL;
+static BOOL sBrowserSwizzleInstalled = NO;
+
+// Called instead of [self browser_sendEvent:event]. Going through the original IMP removes the
+// category lookup from the hot path entirely, which is where the NULL selector came from.
+static void BrowserForwardSendEvent(UIApplication *self, UIEvent *event) {
+    if (sBrowserOriginalSendEventIMP != NULL) {
+        sBrowserOriginalSendEventIMP(self, @selector(sendEvent:), event);
+        return;
+    }
+    // Only reachable if the exchange was refused; losing one event is better than crashing.
+    NSLog(@"[InputTrace][App] original sendEvent: IMP missing; event dropped");
+}
+
 static UIViewController *BrowserFindViewControllerOfClassAtDepth(UIViewController *viewController,
                                                                 Class targetClass,
                                                                 NSUInteger depth) {
@@ -271,6 +306,11 @@ static void BrowserLongPressBeginTracking(UIApplication *application, UIPressTyp
     CFTimeInterval threshold = BrowserLongPressMinimumDurationForType(type);
     BrowserLongPressSetBeganTimestamp(type, CACurrentMediaTime());
     NSUInteger generation = BrowserLongPressBumpGeneration(type);
+    // build-25: UIApplication is a singleton, so the strong capture here is not the crash source
+    // itself -- but the block also re-walks the controller graph through it, and that walk is only
+    // safe while the app is alive and the press is still current. Held weakly and re-checked, a
+    // late timer after teardown becomes a no-op instead of a message into a dead hierarchy.
+    __weak UIApplication *weakApplication = application;
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(threshold * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
@@ -287,8 +327,12 @@ static void BrowserLongPressBeginTracking(UIApplication *application, UIPressTyp
         if (held + 0.02 < threshold) {
             return;
         }
+        UIApplication *app = weakApplication;
+        if (app == nil) {
+            return;
+        }
         if (nativeVideoPlayerClass != Nil &&
-            BrowserFindPresentedNativeVideoPlayerViewController(application, nativeVideoPlayerClass) != nil) {
+            BrowserFindPresentedNativeVideoPlayerViewController(app, nativeVideoPlayerClass) != nil) {
             return;
         }
 
@@ -318,11 +362,39 @@ static void BrowserLongPressEndTracking(UIPressType type) {
 + (void)load {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        Method originalMethod = class_getInstanceMethod(self, @selector(sendEvent:));
-        Method replacementMethod = class_getInstanceMethod(self, @selector(browser_sendEvent:));
-        if (originalMethod != NULL && replacementMethod != NULL) {
-            method_exchangeImplementations(originalMethod, replacementMethod);
+        // build-25: guard the swizzle instead of trusting it. `method_exchangeImplementations` is
+        // idempotent-hostile: if this ever runs twice the two entries swap back, and then the
+        // `browser_sendEvent:` send inside the body resolves through the category's own name to a
+        // NULL selector -- exactly the reason string in the crash log. A one-shot flag plus a
+        // captured original IMP makes a second run a no-op instead of a re-swap.
+        if (sBrowserSwizzleInstalled) {
+            return;
         }
+        Class applicationClass = [UIApplication class];
+        SEL originalSelector = @selector(sendEvent:);
+        SEL replacementSelector = @selector(browser_sendEvent:);
+        Method originalMethod = class_getInstanceMethod(applicationClass, originalSelector);
+        Method replacementMethod = class_getInstanceMethod(applicationClass, replacementSelector);
+        if (originalMethod == NULL || replacementMethod == NULL) {
+            NSLog(@"[InputTrace][App] swizzle skipped (method missing original=%d replacement=%d)",
+                  originalMethod != NULL, replacementMethod != NULL);
+            return;
+        }
+        // Captured BEFORE the swap: afterwards method_getImplementation(original) returns our own
+        // replacement, and the forwarding call would recurse until the stack ends.
+        IMP originalIMP = method_getImplementation(originalMethod);
+        IMP replacementIMP = method_getImplementation(replacementMethod);
+        if (originalIMP == NULL || replacementIMP == NULL) {
+            NSLog(@"[InputTrace][App] swizzle skipped (no IMP)");
+            return;
+        }
+        sBrowserOriginalSendEventIMP = (BrowserSendEventIMP)originalIMP;
+        // One exchange, in one direction, recorded by the flag above. Kept as an exchange rather
+        // than add+replace so `browser_sendEvent:` keeps working as the forwarder that UIKit can
+        // call by its own name if anything else in the app ever refers to it.
+        method_exchangeImplementations(originalMethod, replacementMethod);
+        sBrowserSwizzleInstalled = YES;
+        NSLog(@"[InputTrace][App] sendEvent: swizzle installed original=%p", (void *)sBrowserOriginalSendEventIMP);
     });
 }
 
@@ -374,18 +446,18 @@ static void BrowserLongPressEndTracking(UIPressType type) {
             }
         }
 
-        [self browser_sendEvent:event];
+        BrowserForwardSendEvent(self, event);
         return;
     }
 
     if (event.type != UIEventTypePresses) {
-        [self browser_sendEvent:event];
+        BrowserForwardSendEvent(self, event);
         return;
     }
 
     SEL allPressesSelector = NSSelectorFromString(@"allPresses");
     if (![event respondsToSelector:allPressesSelector]) {
-        [self browser_sendEvent:event];
+        BrowserForwardSendEvent(self, event);
         return;
     }
 
@@ -423,8 +495,17 @@ static void BrowserLongPressEndTracking(UIPressType type) {
         if (press.type == UIPressTypeMenu && press.phase == UIPressPhaseBegan) {
             if (nativeVideoPlayerClass != Nil && nativeVideoPlayerViewController != nil) {
                 NSLog(@"[InputTrace][App] swallow Menu for native player");
+                // build-25: weak, and re-checked inside the block. Deferring to the main queue is
+                // exactly the window in which the controller can be dismissed and released; a
+                // strong capture here kept a dead controller alive and then messaged it, which is
+                // the crash the user keeps hitting.
+                __weak UIViewController *weakPlayer = nativeVideoPlayerViewController;
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [nativeVideoPlayerViewController dismissViewControllerAnimated:YES completion:nil];
+                    UIViewController *player = weakPlayer;
+                    if (player == nil) {
+                        return;
+                    }
+                    [player dismissViewControllerAnimated:YES completion:nil];
                 });
                 return;
             }
@@ -435,8 +516,13 @@ static void BrowserLongPressEndTracking(UIPressType type) {
                 SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
                 if ([nativeVideoPlayerViewController respondsToSelector:togglePlaybackSelector]) {
                     NSLog(@"[InputTrace][App] swallow PlayPause for native player");
+                    __weak UIViewController *weakPlayer = nativeVideoPlayerViewController;
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        ((void (*)(id, SEL))objc_msgSend)(nativeVideoPlayerViewController, togglePlaybackSelector);
+                        UIViewController *player = weakPlayer;
+                        if (player == nil || ![player respondsToSelector:togglePlaybackSelector]) {
+                            return;
+                        }
+                        ((void (*)(id, SEL))objc_msgSend)(player, togglePlaybackSelector);
                     });
                     return;
                 }
@@ -448,8 +534,13 @@ static void BrowserLongPressEndTracking(UIPressType type) {
                 SEL togglePlaybackSelector = NSSelectorFromString(@"togglePlayback");
                 if ([nativeVideoPlayerViewController respondsToSelector:togglePlaybackSelector]) {
                     NSLog(@"[InputTrace][App] swallow Select for native player");
+                    __weak UIViewController *weakPlayer = nativeVideoPlayerViewController;
                     dispatch_async(dispatch_get_main_queue(), ^{
-                        ((void (*)(id, SEL))objc_msgSend)(nativeVideoPlayerViewController, togglePlaybackSelector);
+                        UIViewController *player = weakPlayer;
+                        if (player == nil || ![player respondsToSelector:togglePlaybackSelector]) {
+                            return;
+                        }
+                        ((void (*)(id, SEL))objc_msgSend)(player, togglePlaybackSelector);
                     });
                     return;
                 }
@@ -470,8 +561,13 @@ static void BrowserLongPressEndTracking(UIPressType type) {
                         NSTimeInterval delta = (press.type == UIPressTypeRightArrow) ? 5.0 : -5.0;
                         NSLog(@"[InputTrace][App] swallow %@ double tap for native player (delta=%0.1f)",
                               BrowserPressTypeString(press.type), delta);
+                        __weak UIViewController *weakPlayer = nativeVideoPlayerViewController;
                         dispatch_async(dispatch_get_main_queue(), ^{
-                            ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(nativeVideoPlayerViewController, skipSelector, delta);
+                            UIViewController *player = weakPlayer;
+                            if (player == nil || ![player respondsToSelector:skipSelector]) {
+                                return;
+                            }
+                            ((void (*)(id, SEL, NSTimeInterval))objc_msgSend)(player, skipSelector, delta);
                         });
                         sBrowserNativeLastArrowPressType = (UIPressType)-1;
                         sBrowserNativeLastArrowPressTimestamp = 0.0;
@@ -506,7 +602,7 @@ static void BrowserLongPressEndTracking(UIPressType type) {
         }
     }
 
-    [self browser_sendEvent:event];
+    BrowserForwardSendEvent(self, event);
 
     if (shouldPostSelectEndedNotification) {
         dispatch_async(dispatch_get_main_queue(), ^{
