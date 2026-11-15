@@ -4,6 +4,9 @@
 #import <objc/runtime.h>
 
 NSString * const BrowserGlobalSelectPressEndedNotification = @"BrowserGlobalSelectPressEndedNotification";
+NSString * const BrowserGlobalArrowPressNotification = @"BrowserGlobalArrowPressNotification";
+NSString * const BrowserGlobalArrowPressTypeKey = @"type";
+NSString * const BrowserGlobalArrowPressBeganKey = @"began";
 static BOOL sBrowserNativeScrubTracking = NO;
 static CGFloat sBrowserNativePendingScrubPixels = 0.0;
 static CGPoint sBrowserNativeLastTouchLocation = {0, 0};
@@ -98,6 +101,26 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
 
 @end
 
+#pragma mark - Arrow press forwarding
+
+// Arrow presses are consumed by the tvOS focus engine before they ever reach
+// -pressesBegan:, so they are observed here and republished as a notification.
+static BOOL BrowserIsArrowPressType(UIPressType type) {
+    return type == UIPressTypeUpArrow ||
+           type == UIPressTypeDownArrow ||
+           type == UIPressTypeLeftArrow ||
+           type == UIPressTypeRightArrow;
+}
+
+static void BrowserPublishArrowPress(UIPressType type, BOOL began) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:BrowserGlobalArrowPressNotification
+                                                            object:nil
+                                                          userInfo:@{BrowserGlobalArrowPressTypeKey: @(type),
+                                                                     BrowserGlobalArrowPressBeganKey: @(began)}];
+    });
+}
+
 @implementation UIApplication (BrowserSelectPressForwarding)
 
 + (void)load {
@@ -177,11 +200,20 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
     NSSet<UIPress *> *presses = ((id (*)(id, SEL))objc_msgSend)(event, allPressesSelector);
     for (UIPress *press in presses) {
         nativeVideoPlayerViewController = BrowserFindPresentedNativeVideoPlayerViewController(self, nativeVideoPlayerClass);
-        if (press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) {
+        if ((press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) && press.phase == UIPressPhaseBegan) {
             NSLog(@"[InputTrace][App] press=%@ phase=%@ top=%@",
                   BrowserPressTypeString(press.type),
                   BrowserPressPhaseString(press.phase),
                   nativeVideoPlayerViewController == nil ? @"(nil)" : NSStringFromClass([nativeVideoPlayerViewController class]));
+        }
+
+        // Republish arrow presses so the cursor can move; skip while the native player is up
+        // because there the arrows drive scrubbing.
+        if (BrowserIsArrowPressType(press.type) &&
+            nativeVideoPlayerViewController == nil &&
+            (press.phase == UIPressPhaseBegan || press.phase == UIPressPhaseEnded || press.phase == UIPressPhaseCancelled)) {
+            NSLog(@"[InputTrace][App] arrow press=%@ phase=%@", BrowserPressTypeString(press.type), BrowserPressPhaseString(press.phase));
+            BrowserPublishArrowPress(press.type, press.phase == UIPressPhaseBegan);
         }
 
         if (press.type == UIPressTypeMenu && press.phase == UIPressPhaseBegan) {
