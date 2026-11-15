@@ -46,6 +46,9 @@ static UIColor *kTextColor(void) {
 @property (nonatomic) BOOL displayedHintsOnLaunch;
 @property (nonatomic) BOOL scrollViewAllowBounces;
 @property (nonatomic, getter=isTopBarFocusActive) BOOL topBarFocusActive;
+@property (nonatomic) BOOL pseudoFullscreenActive;
+@property (nonatomic) BOOL pseudoFullscreenCursorModeWasEnabled;
+@property (nonatomic) BOOL pseudoFullscreenTopBarWasVisible;
 
 @end
 
@@ -689,6 +692,139 @@ static UIColor *kTextColor(void) {
     [self showAdvancedMenu];
 }
 
+#pragma mark - Pseudo fullscreen (long press Play/Pause)
+
+- (NSString *)browserPseudoFullscreenEnterScript {
+    return
+    @"(function(){"
+    "var STYLE_ID='__browser_pf_style';"
+    "var VIDEO_ATTR='data-browser-pf-video';"
+    "var ANCESTOR_ATTR='data-browser-pf-ancestor';"
+    "var ROOT_ATTR='data-browser-pf';"
+    "function area(el){try{var r=el.getBoundingClientRect();return Math.max(0,r.width)*Math.max(0,r.height);}catch(e){return 0;}}"
+    "function collect(doc, frame, out){"
+        "if(!doc){return;}"
+        "try{"
+            "var list=doc.querySelectorAll('video');"
+            "for(var i=0;i<list.length;i++){out.push({v:list[i],f:frame});}"
+            "var frames=doc.querySelectorAll('iframe');"
+            "for(var j=0;j<frames.length;j++){"
+                "var fd=null;"
+                "try{fd=frames[j].contentDocument||null;}catch(e){fd=null;}"
+                "if(fd){collect(fd, frames[j], out);}"
+            "}"
+        "}catch(e){}"
+    "}"
+    "var found=[];collect(document, null, found);"
+    "var playing=found.filter(function(e){return e.v.readyState>0 && !e.v.paused && !e.v.ended;});"
+    "var pool=playing.length?playing:found;"
+    "var video=null;var frame=null;"
+    "if(pool.length){var best=pool[0];var bestArea=area(pool[0].v);for(var k=1;k<pool.length;k++){var a=area(pool[k].v);if(a>bestArea){bestArea=a;best=pool[k];}}video=best.v;frame=best.f;}"
+    "var css='['+VIDEO_ATTR+']{position:fixed!important;left:0!important;top:0!important;right:0!important;bottom:0!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;z-index:2147483647!important;object-fit:contain!important;background:#000!important;transform:none!important;}['+ANCESTOR_ATTR+']{transform:none!important;filter:none!important;perspective:none!important;will-change:auto!important;contain:none!important;overflow:visible!important;}html['+ROOT_ATTR+'],html['+ROOT_ATTR+'] body{overflow:hidden!important;}';"
+    "function ensureStyle(doc){"
+        "if(!doc){return;}"
+        "if(doc.getElementById(STYLE_ID)){return;}"
+        "var style=doc.createElement('style');"
+        "style.id=STYLE_ID;"
+        "style.textContent=css;"
+        "(doc.head||doc.documentElement).appendChild(style);"
+    "}"
+    "ensureStyle(document);"
+    "if(!video){"
+    "var frames=[];try{var fs=document.querySelectorAll('iframe');for(var q=0;q<fs.length;q++){frames.push(fs[q]);}}catch(e){}"
+    "if(!frames.length){return 'no-video';}"
+    "var bf=frames[0];var bfa=area(bf);"
+    "for(var r=1;r<frames.length;r++){var fa=area(frames[r]);if(fa>bfa){bfa=fa;bf=frames[r];}}"
+    "if(bfa<=0){return 'no-video';}"
+    "bf.setAttribute(VIDEO_ATTR,'1');"
+    "document.documentElement.setAttribute(ROOT_ATTR,'1');"
+    "window.__browserPseudoFullscreenVideo=null;"
+    "window.__browserPseudoFullscreenFrame=bf;"
+    "return 'iframe';"
+    "}"
+    "ensureStyle(video.ownerDocument);"
+    "var node=video.parentElement;"
+    "while(node){node.setAttribute(ANCESTOR_ATTR,'1');node=node.parentElement;}"
+    "video.setAttribute(VIDEO_ATTR,'1');"
+    "try{video.ownerDocument.documentElement.setAttribute(ROOT_ATTR,'1');}catch(e){}"
+    "document.documentElement.setAttribute(ROOT_ATTR,'1');"
+    "if(frame){frame.setAttribute(VIDEO_ATTR,'1');}"
+    "window.__browserPseudoFullscreenVideo=video;"
+    "window.__browserPseudoFullscreenFrame=frame;"
+    "return 'ok';"
+    "})()";
+}
+
+- (NSString *)browserPseudoFullscreenExitScript {
+    return
+    @"(function(){"
+    "var STYLE_ID='__browser_pf_style';"
+    "var VIDEO_ATTR='data-browser-pf-video';"
+    "var ANCESTOR_ATTR='data-browser-pf-ancestor';"
+    "var ROOT_ATTR='data-browser-pf';"
+    "var video=window.__browserPseudoFullscreenVideo;"
+    "var frame=window.__browserPseudoFullscreenFrame;"
+    "function cleanup(doc){"
+        "if(!doc){return;}"
+        "try{"
+            "var nodes=doc.querySelectorAll('['+VIDEO_ATTR+'],['+ANCESTOR_ATTR+']');"
+            "for(var i=0;i<nodes.length;i++){nodes[i].removeAttribute(VIDEO_ATTR);nodes[i].removeAttribute(ANCESTOR_ATTR);}"
+        "}catch(e){}"
+        "try{doc.documentElement.removeAttribute(ROOT_ATTR);}catch(e){}"
+        "var style=doc.getElementById(STYLE_ID);"
+        "if(style&&style.parentNode){style.parentNode.removeChild(style);}"
+    "}"
+    "cleanup(document);"
+    "if(video){try{cleanup(video.ownerDocument);}catch(e){}}"
+    "if(video){try{video.removeAttribute(VIDEO_ATTR);}catch(e){}}"
+    "if(frame){try{frame.removeAttribute(VIDEO_ATTR);}catch(e){}}"
+    "window.__browserPseudoFullscreenVideo=null;"
+    "window.__browserPseudoFullscreenFrame=null;"
+    "return 'ok';"
+    "})()";
+}
+
+- (void)browserRemoteInputControllerHandlePseudoFullscreenPress {
+    if (self.pseudoFullscreenActive) {
+        [self exitPseudoFullscreen];
+    } else {
+        [self enterPseudoFullscreen];
+    }
+}
+
+- (void)enterPseudoFullscreen {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return;
+    }
+
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:[self browserPseudoFullscreenEnterScript]];
+    NSLog(@"[PseudoFullscreen] enter result=%@", result);
+
+    self.pseudoFullscreenActive = YES;
+    self.pseudoFullscreenTopBarWasVisible = self.viewModel.topNavigationBarVisible;
+    self.pseudoFullscreenCursorModeWasEnabled = self.remoteInputController.cursorModeEnabled;
+
+    if (self.viewModel.topNavigationBarVisible) {
+        [self browserHideTopNav];
+    }
+}
+
+- (void)exitPseudoFullscreen {
+    BrowserWebView *webView = self.webview;
+    if (webView != nil) {
+        NSString *result = [webView stringByEvaluatingJavaScriptFromString:[self browserPseudoFullscreenExitScript]];
+        NSLog(@"[PseudoFullscreen] exit result=%@", result);
+    }
+
+    self.pseudoFullscreenActive = NO;
+
+    if (self.pseudoFullscreenTopBarWasVisible && !self.viewModel.topNavigationBarVisible) {
+        [self browserShowTopNav];
+    }
+    self.pseudoFullscreenTopBarWasVisible = NO;
+}
+
 - (NSString *)browserRemoteInputControllerHoverStateAtCursorPoint:(CGPoint)point {
     if (self.webview.request == nil) {
         return @"false";
@@ -725,6 +861,15 @@ static UIColor *kTextColor(void) {
 
 - (void)webViewDidStartLoad:(id)webView {
     [self.tabCoordinator webViewDidStartLoad:webView];
+
+    if (self.pseudoFullscreenActive) {
+        self.pseudoFullscreenActive = NO;
+        BOOL shouldRestoreTopBar = self.pseudoFullscreenTopBarWasVisible && !self.viewModel.topNavigationBarVisible;
+        self.pseudoFullscreenTopBarWasVisible = NO;
+        if (shouldRestoreTopBar) {
+            [self browserShowTopNav];
+        }
+    }
 }
 
 - (void)webViewDidFinishLoad:(id)webView {
