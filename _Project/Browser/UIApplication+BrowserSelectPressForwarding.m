@@ -127,6 +127,19 @@ static UIViewController *BrowserFindViewControllerOfClassAtDepth(UIViewControlle
         return nil;
     }
 
+    // build-26: a controller that is mid-teardown is not a valid node to descend into. The tree
+    // pointers are cleared in a different order than the object is freed, so a walk that starts
+    // from an anchor captured a moment earlier can reach a node whose `parentViewController`,
+    // `view.window` and owning window are all already gone. Reading four properties off it and
+    // then messaging the result is the crash. A node with no parent and no window is unreachable
+    // from the live hierarchy, so answering "not here" is both safe and correct.
+    BOOL stillInstalled = viewController.parentViewController != nil
+                       || viewController.view.window != nil
+                       || viewController.presentingViewController != nil;
+    if (depth > 0 && !stillInstalled) {
+        return nil;
+    }
+
     if ([viewController isKindOfClass:targetClass]) {
         return viewController;
     }
@@ -187,6 +200,13 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
     // connectedScenes is the supported route on tvOS 13+; `windows` still works but can include
     // windows from a scene that is being disconnected, which is one more way to touch a dying
     // controller. Collect root controllers first so the walk below starts from stable anchors.
+    //
+    // build-26: two defects fixed here. (1) The walk used to run once per press inside the press
+    // loop of -browser_sendEvent:, so one event with N presses did N full tree traversals; it is
+    // now hoisted out and runs once per event. (2) `roots` is an array of strong references, so it
+    // kept every root controller alive -- including one that navigation had just torn down -- and
+    // the walk then messaged it. The root is now taken into a local, nil-checked, and only then
+    // added, and the recursive walk refuses nodes that are no longer installed.
     NSMutableArray<UIViewController *> *roots = [NSMutableArray array];
     for (UIScene *scene in application.connectedScenes) {
         if (![scene isKindOfClass:[UIWindowScene class]]) {
@@ -197,19 +217,27 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
             continue;
         }
         for (UIWindow *window in windowScene.windows) {
-            if (window.hidden || window.rootViewController == nil) {
+            if (window.hidden) {
                 continue;
             }
-            [roots addObject:window.rootViewController];
+            UIViewController *root = window.rootViewController;
+            if (root == nil) {
+                continue;
+            }
+            [roots addObject:root];
         }
     }
     if (roots.count == 0) {
         // Fall back for older tvOS builds where connectedScenes is empty at this point.
         for (UIWindow *window in application.windows) {
-            if (window.hidden || window.rootViewController == nil) {
+            if (window.hidden) {
                 continue;
             }
-            [roots addObject:window.rootViewController];
+            UIViewController *root = window.rootViewController;
+            if (root == nil) {
+                continue;
+            }
+            [roots addObject:root];
         }
     }
 
@@ -220,6 +248,22 @@ static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIA
         }
     }
     return nil;
+}
+
+// build-26: -browser_sendEvent: used to walk the controller tree on entry for EVERY event, and
+// again inside the press loop for EVERY press. A walk touches parentViewController,
+// view.window, childViewControllers, presentedViewController, visibleViewController and
+// selectedViewController -- exactly the properties navigation clears while it is tearing the old
+// hierarchy down. Two cheap checks make that window far smaller:
+//   1. only walk for press types whose handling actually consults the player, and
+//   2. only walk for touch events that can scrub (indirect touches on the remote surface).
+// Anything else forwards straight through, untouched.
+static BOOL BrowserPressNeedsNativePlayerLookup(UIPressType type) {
+    return type == UIPressTypeMenu
+        || type == UIPressTypePlayPause
+        || type == UIPressTypeSelect
+        || type == UIPressTypeLeftArrow
+        || type == UIPressTypeRightArrow;
 }
 
 @interface UIApplication (BrowserSelectPressForwarding)
@@ -400,12 +444,26 @@ static void BrowserLongPressEndTracking(UIPressType type) {
 
 - (void)browser_sendEvent:(UIEvent *)event {
     Class nativeVideoPlayerClass = NSClassFromString(@"BrowserNativeVideoPlayerViewController");
-    UIViewController *nativeVideoPlayerViewController = BrowserFindPresentedNativeVideoPlayerViewController(self, nativeVideoPlayerClass);
+    // build-26: no longer looked up on entry. Each branch asks for it only when it needs it, so a
+    // touch-move that cannot scrub and a press that cannot reach the player skip the tree walk.
+    UIViewController *nativeVideoPlayerViewController = nil;
 
     if (event.type == UIEventTypeTouches) {
         SEL allTouchesSelector = NSSelectorFromString(@"allTouches");
         if ([event respondsToSelector:allTouchesSelector]) {
             NSSet<UITouch *> *touches = ((id (*)(id, SEL))objc_msgSend)(event, allTouchesSelector);
+            // Only an indirect touch (the remote's surface) can scrub; a direct touch on a TV is not
+            // a thing, but the check keeps the walk off every other touch event.
+            BOOL mayScrub = NO;
+            for (UITouch *touch in touches) {
+                if (touch.type == UITouchTypeIndirect) {
+                    mayScrub = YES;
+                    break;
+                }
+            }
+            if (mayScrub) {
+                nativeVideoPlayerViewController = BrowserFindPresentedNativeVideoPlayerViewController(self, nativeVideoPlayerClass);
+            }
             for (UITouch *touch in touches) {
                 if (touch.type != UITouchTypeIndirect) {
                     continue;
@@ -462,8 +520,21 @@ static void BrowserLongPressEndTracking(UIPressType type) {
     }
 
     NSSet<UIPress *> *presses = ((id (*)(id, SEL))objc_msgSend)(event, allPressesSelector);
+    // build-26: decided once for the whole event, then walked once -- not once per press. The old
+    // code re-walked the tree for every press, so a two-press event did two full traversals.
+    BOOL needsPlayerLookup = NO;
     for (UIPress *press in presses) {
+        if (BrowserPressNeedsNativePlayerLookup(press.type)) {
+            needsPlayerLookup = YES;
+            break;
+        }
+    }
+    if (needsPlayerLookup) {
         nativeVideoPlayerViewController = BrowserFindPresentedNativeVideoPlayerViewController(self, nativeVideoPlayerClass);
+    } else {
+        nativeVideoPlayerViewController = nil;
+    }
+    for (UIPress *press in presses) {
         if ((press.type == UIPressTypeMenu || press.type == UIPressTypePlayPause || press.type == UIPressTypeSelect) && press.phase == UIPressPhaseBegan) {
             NSLog(@"[InputTrace][App] press=%@ phase=%@ top=%@",
                   BrowserPressTypeString(press.type),

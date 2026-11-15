@@ -412,21 +412,25 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 // 2 pt also pairs better with the 14 px click-assist ring: the ring covers about seven arrow taps
 // in every direction, so a deliberate row of taps still lands on a small control without the taps
 // themselves having to be coarse. The ramp is untouched -- a hold still opens up immediately.
-static CGFloat const kBrowserCursorArrowStep = 2.0;
+static CGFloat const kBrowserCursorArrowStep = 1.0;
 // Holding an arrow ramps the step quickly: the old ramp needed 4 repeats (~0.24 s) for 20 pt and
 // 12 (~0.72 s) for 48 pt, which felt like a crawl next to scroll mode's 44 pt.
-// build-24: entry 0 follows kBrowserCursorArrowStep (now 2 pt). Leaving a 4 pt first entry while the
-// tap step is 2 pt made the first repeat tick double the step, so every press longer than two ticks
-// still moved at the old rate -- the exact "还是有点大" complaint, just one frame later.
-static CGFloat const kBrowserCursorArrowStepRamp[4] = {2.0, 24.0, 56.0, 104.0};
+// build-26: the single-tap step is now 1 pt, but the ramp must not open a gap that makes a held
+// press feel like a different control. build-24's lesson still holds -- entry 0 has to track the
+// tap step, otherwise the first repeat tick silently doubles it and every press slightly longer
+// than a tap moves at the old, coarser rate. Entry 0 therefore follows kBrowserCursorArrowStep,
+// and entry 1 drops from 24 to 16 so the jump from tap to hold is one gentle step, not 24x.
+static CGFloat const kBrowserCursorArrowStepRamp[4] = {1.0, 16.0, 44.0, 88.0};
 // build-23: repeat counter values at which each ramp entry above kicks in. The first entry must sit
 // ABOVE 1, not at 1. The timer increments the counter before it looks the step up, so the very
 // first tick is already repeatCount == 1 -- with a threshold of 1 the second tick jumped straight
-// to 24 pt, and any press slightly longer than a tap moved many times further than a tap should.
-// Users noticed exactly that: "单按时光标移动跨度变大了". Starting at 2 keeps the tap step for ticks
-// 1 and 2 (build-24: that is now 2 pt, not 4 pt), so a short press and a held press are clearly
-// different, while reaching 24 pt still takes ~0.11 s.
-static NSInteger const kBrowserCursorArrowRampThresholds[3] = {2, 6, 16};
+// to the next ramp entry, and any press slightly longer than a tap moved many times further than a
+// tap should. Users noticed exactly that: "单按时光标移动跨度变大了".
+// build-27: the counter now counts REAL repeats, because the tick that used to duplicate the
+// press-down move is swallowed. With that off-by-one gone the thresholds can be stated in plain
+// terms: 1 = the first genuine repeat, so a hold stays at the tap step for the first beat and only
+// then accelerates. Reaching the top entry takes ~0.28 s of holding.
+static NSInteger const kBrowserCursorArrowRampThresholds[3] = {1, 6, 16};
 static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.055;
 static NSInteger const kBrowserCursorArrowMaxRepeats = 120;
 // Scroll mode reuses the same timer but measures travel in page content, so its steps are larger.
@@ -600,6 +604,15 @@ static CGFloat const kBrowserEdgeScrollCursorFollowRatio = 0.55;
         [self applyManualScrollDelta:[self scrollDeltaForPressType:type step:kBrowserScrollArrowStep] allowInnerScroll:YES];
     }
 
+    // build-27: THE reason "缩小步长" never helped. This method already moves the cursor once, on the
+    // press-down. The repeat timer then fires 55 ms later with repeatCount == 1 and moves AGAIN -- the
+    // ramp only kicks in above threshold[0], so that second move is another full base step. A plain
+    // tap therefore travelled exactly 2 x the step, which is why trimming the constant from 4 to 2 to
+    // 1 pt never changed the felt distance: the user was always seeing two of them.
+    //
+    // `movedOnBegin` makes the first timer tick a no-op. From the second tick on, every tick is a real
+    // repeat and the ramp applies. Short taps now cost one step; a hold still accelerates.
+    __block BOOL movedOnBegin = YES;
     __block NSInteger repeatCount = 0;
     __weak typeof(self) weakSelf = self;
     self.cursorArrowRepeatTimer = [NSTimer scheduledTimerWithTimeInterval:kBrowserCursorArrowRepeatInterval
@@ -625,6 +638,11 @@ static CGFloat const kBrowserEdgeScrollCursorFollowRatio = 0.55;
         // ends it. If the button is released while blocked, handleArrowPressEnded: still clears the
         // state, so nothing is left running.
         if (![strongSelf canUseArrowsForMovement]) {
+            return;
+        }
+        // build-27: swallow the first tick -- beginCursorArrowRepeatWithPressType: already moved.
+        if (movedOnBegin) {
+            movedOnBegin = NO;
             return;
         }
         if (++repeatCount > kBrowserCursorArrowMaxRepeats) {
