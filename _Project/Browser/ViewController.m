@@ -785,14 +785,21 @@ static UIColor *kTextColor(void) {
 
 #pragma mark - Pseudo fullscreen: apply the page-side styling only
 
-// Returns the JS result string ('ok' / 'iframe' / 'no-video') and does not touch the chrome.
+// Returns the JS result string and does not touch the chrome. Retries once with a manually
+// injected engine so a page that loaded before the user script was live still works.
 - (NSString *)applyPseudoFullscreenStyling {
     BrowserWebView *webView = self.webview;
     if (webView == nil) {
         return @"no-webview";
     }
+
     NSString *result = [webView stringByEvaluatingJavaScriptFromString:[self browserPseudoFullscreenEnterScript]];
-    NSLog(@"[PseudoFullscreen] style result=%@", result);
+    if ([result isEqualToString:@"no-engine"] || result.length == 0) {
+        NSLog(@"[PseudoFullscreen] engine missing, injecting on demand");
+        [webView installPseudoFullscreenEngineFallback];
+        result = [webView stringByEvaluatingJavaScriptFromString:[self browserPseudoFullscreenEnterScript]];
+    }
+    NSLog(@"[PseudoFullscreen] style result=%@", result ?: @"(nil)");
     return result ?: @"";
 }
 
