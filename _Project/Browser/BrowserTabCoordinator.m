@@ -188,6 +188,30 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
     return webView != nil && webView.superview == self.thumbnailStagingView;
 }
 
+/// build-21: log-only helper. The identifier of the tab a web view belongs to is stamped on the web
+/// view at creation time so "[MediaPause] tabId=..." lines can be tied back to one tab; the raw
+/// identifier is long, so only its first chunk is printed.
+- (BrowserWebView *)webViewForTab:(BrowserTabViewModel *)tab {
+    if (tab == nil) {
+        return nil;
+    }
+    BrowserWebView *webView = self.webViewsByTabIdentifier[tab.identifier];
+    if (webView == nil) {
+        webView = [self createConfiguredWebView];
+        self.webViewsByTabIdentifier[tab.identifier] = webView;
+    }
+    webView.mediaPauseTag = [self shortIdentifierPrefixForTabIdentifier:tab.identifier];
+    return webView;
+}
+
+- (NSString *)shortIdentifierPrefixForTabIdentifier:(NSString *)identifier {
+    if (identifier.length == 0) {
+        return @"tab";
+    }
+    NSUInteger prefixLength = MIN(identifier.length, (NSUInteger)8);
+    return [identifier substringToIndex:prefixLength];
+}
+
 - (BrowserWebView *)createConfiguredWebView {
     BrowserWebView *webView = [[BrowserWebView alloc] initWithUserAgent:self.preferencesStore.userAgent
                                             allowsInlineMediaPlayback:YES];
@@ -270,11 +294,7 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
         return;
     }
 
-    BrowserWebView *webView = self.webViewsByTabIdentifier[tab.identifier];
-    if (webView == nil) {
-        webView = [self createConfiguredWebView];
-        self.webViewsByTabIdentifier[tab.identifier] = webView;
-    }
+    BrowserWebView *webView = [self webViewForTab:tab];
     self.activeWebView = webView;
     [self attachActiveWebView];
 }
@@ -300,6 +320,9 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
     }
 
     self.activeWebView = activeWebView;
+    // build-21: the tab being switched back to was muted when it was parked; unmute it here, once,
+    // before it becomes visible. Doing it after would let the first frame of audio play silently.
+    [self.activeWebView setTabAudioMuted:NO];
     [self.topMenuView.loadingSpinner stopAnimating];
     [self.activeWebView removeFromSuperview];
     [self.browserContainerView addSubview:self.activeWebView];
@@ -427,15 +450,10 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
     [self updateThumbnailStagingViewFrame];
 
     for (BrowserTabViewModel *tab in self.viewModel.tabs) {
-        BrowserWebView *webView = self.webViewsByTabIdentifier[tab.identifier];
+        BrowserWebView *webView = [self webViewForTab:tab];
         if (tab == self.activeTab) {
             [self captureSnapshotForTab:tab];
             continue;
-        }
-
-        if (webView == nil) {
-            webView = [self createConfiguredWebView];
-            self.webViewsByTabIdentifier[tab.identifier] = webView;
         }
 
         [self parkWebViewForThumbnailing:webView];
@@ -507,8 +525,15 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
     // old WKWebView was only parked for thumbnailing, so a video kept decoding (and audible) in the
     // background after switching tabs. pauseAllMediaPlayback is called BEFORE the switch because
     // self.activeWebView is reassigned by the next call.
+    //
+    // build-21: a switched-away tab keeps its page alive on purpose (that is what makes switching
+    // back instant), but you cannot pause a page and walk away from it -- the player's own
+    // buffer-watchdog calls play() again a few seconds later. So the parked tab is muted as well:
+    // pause alone leaves it eligible to unmute itself, whereas mute is sticky until the page sets it
+    // back, and the tab is unmuted again the moment it becomes active.
     if (tabIndex != self.viewModel.activeTabIndex) {
         [self.activeWebView pauseAllMediaPlayback];
+        [self.activeWebView setTabAudioMuted:YES];
     }
 
     [self.viewModel switchToTabAtIndex:tabIndex];
@@ -532,9 +557,14 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
     // the dictionary entry only detaches the view from the hierarchy; the WKWebView keeps its own
     // process and the <video> element keeps decoding, so a closed tab stayed audible in the
     // background. Pause first, then tear the content down.
+    //
+    // build-21: pausing was not enough on its own. Youku / iQiyi players run a buffer-watchdog that
+    // calls play() again a few seconds after any external pause, and a closed tab still owns a live
+    // WKWebView plus its content process, so the audio came back. teardownMediaForTabClose pauses,
+    // stops loading, and then blanks the frame -- after which there is no page left to restart.
     BrowserWebView *closingWebView = self.webViewsByTabIdentifier[tab.identifier];
     if (closingWebView != nil) {
-        [closingWebView pauseAllMediaPlayback];
+        [closingWebView teardownMediaForTabClose];
     }
 
     [self.webViewsByTabIdentifier[tab.identifier] removeFromSuperview];
