@@ -993,15 +993,19 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 // build-21: "where is the crash log" answered from inside the app instead of from a chat message.
 // A TV has no file browser: the app container cannot be opened by the user, and the log cannot be
 // copied off without a debug cable. So the menu shows it directly -- the file path, the last write
-// time, its size, and the tail of the content -- and offers to copy it as a page, which is what
-// makes it transferable at all (open it in a tab, then use whatever the user normally uses to send
-// a URL / text away from the device).
+// time, its size, and the tail of the content -- and offers to open the whole thing as a page.
 //
 // The same menu keeps the "app quit by itself" question answerable without a debug build: if the
 // file is empty or missing after a crash, that is itself the finding (the process died in a way
 // NSSetUncaughtExceptionHandler cannot see, i.e. a signal / jetsam kill rather than an exception).
 static NSString * const kBrowserCrashLogRelativePath = @"browser-crash.log";
 static NSUInteger const kBrowserCrashLogPreviewLimit = 1400;
+// build-21: the export copy. UIPasteboard does not exist on tvOS -- it is a UIKit class marked
+// unavailable for this platform, so the first attempt at "let the user take the log away" did not
+// compile at all. What tvOS does offer is the app container itself: a file placed in Documents is
+// listed by Xcode's Devices window and can be dragged off the device from there. TMPDIR inside
+// NSCachesDirectory is not reachable that way, which is why the export goes to Documents.
+static NSString * const kBrowserCrashLogExportFileName = @"browser-crash.log";
 
 - (NSString *)crashLogFilePath {
     NSString *dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
@@ -1058,29 +1062,93 @@ static NSUInteger const kBrowserCrashLogPreviewLimit = 1400;
     UIAlertController *alertController = [self browserAlertControllerWithTitle:@"崩溃 / 运行日志"
                                                                        message:[self crashLogSummaryMessage]];
     __weak typeof(self) weakSelf = self;
-    [alertController addAction:[self browserActionWithTitle:@"复制到剪贴板"
+    [alertController addAction:[self browserActionWithTitle:@"在页面中查看全文"
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(UIAlertAction *action) {
         (void)action;
-        [weakSelf copyCrashLogToPasteboard];
+        [weakSelf presentCrashLogAsPage];
+    }]];
+    [alertController addAction:[self browserActionWithTitle:@"导出到 Documents"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(UIAlertAction *action) {
+        (void)action;
+        [weakSelf exportCrashLogToDocuments];
     }]];
     [alertController addAction:[self browserCancelAction]];
     [self.host browserPresentViewController:alertController];
 }
 
-- (void)copyCrashLogToPasteboard {
+// tvOS has no clipboard. The only route off the device the user can actually drive is the app
+// container, so this copies the log into Documents/ and reports the result (including the failure
+// case -- reporting success without checking the write is how a missing log becomes unexplainable).
+- (void)exportCrashLogToDocuments {
+    NSString *sourcePath = [self crashLogFilePath];
+    NSString *content = [NSString stringWithContentsOfFile:sourcePath encoding:NSUTF8StringEncoding error:NULL];
+    if (content.length == 0) {
+        content = [NSString stringWithFormat:@"(没有日志内容) %@\n", sourcePath];
+    }
+
+    NSArray<NSString *> *documentDirectories = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                                                   NSUserDomainMask, YES);
+    NSString *documentDirectory = documentDirectories.firstObject;
+    if (documentDirectory.length == 0) {
+        [self presentCrashLogResultWithTitle:@"导出失败"
+                                     message:@"找不到 Documents 目录，无法导出。"];
+        return;
+    }
+
+    NSString *destinationPath = [documentDirectory stringByAppendingPathComponent:kBrowserCrashLogExportFileName];
+    NSError *writeError = nil;
+    BOOL wrote = [content writeToFile:destinationPath
+                           atomically:YES
+                             encoding:NSUTF8StringEncoding
+                                error:&writeError];
+    if (!wrote) {
+        NSLog(@"[CrashLog] export failed: %@", writeError.localizedDescription);
+        [self presentCrashLogResultWithTitle:@"导出失败"
+                                     message:[NSString stringWithFormat:@"写入 %@ 失败：%@",
+                                              destinationPath,
+                                              writeError.localizedDescription ?: @"未知错误"]];
+        return;
+    }
+
+    // Read the bytes back instead of trusting the return value: a write that reports success but
+    // leaves a truncated file would make the exported copy look authoritative while being wrong.
+    NSDictionary<NSString *, id> *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:destinationPath
+                                                                                               error:NULL];
+    unsigned long long writtenSize = [attributes[NSFileSize] unsignedLongLongValue];
+    NSLog(@"[CrashLog] exported %llu bytes -> %@", writtenSize, destinationPath);
+
+    [self presentCrashLogResultWithTitle:@"已导出"
+                                 message:[NSString stringWithFormat:
+                                          @"%@\n\n（%llu 字节）\n\n"
+                                           "取走方式：用 USB-C 线把 Apple TV 连到 Mac，"
+                                           "打开 Xcode → Window → Devices and Simulators → "
+                                           "选中这台 Apple TV → 选中本 App → "
+                                           "在 Installed Apps 下方点齿轮 → Download Container，"
+                                           "解压后在 AppData/Documents 里就是这份日志。",
+                                          destinationPath,
+                                          writtenSize]];
+}
+
+- (void)presentCrashLogResultWithTitle:(NSString *)title message:(NSString *)message {
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:title message:message];
+    [alertController addAction:[self browserCancelAction]];
+    [self.host browserPresentViewController:alertController];
+}
+
+// Renders the whole log as a plain-text page. This is the fastest path on the device itself: the
+// content becomes selectable text in a tab, and the tab's URL can be bookmarked or shared, none of
+// which needs a cable or a second screen.
+- (void)presentCrashLogAsPage {
     NSString *path = [self crashLogFilePath];
     NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
     if (content.length == 0) {
         content = [NSString stringWithFormat:@"(没有日志内容) %@", path];
     }
-    // The file path goes in front of the content so a paste elsewhere still says where it came from.
+    // The file path goes in front of the content so a copy taken elsewhere still says where it came from.
     NSString *payload = [NSString stringWithFormat:@"# %@\n%@", path, content];
-    UIPasteboard.generalPasteboard.string = payload;
-    NSLog(@"[CrashLog] copied %lu bytes to pasteboard", (unsigned long)payload.length);
 
-    // Second route, because tvOS has no way to read the pasteboard from another app: drop the log
-    // into the browser as a plain-text page, where the user can select it or bookmark it.
     NSString *escapedPayload = [payload stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
     escapedPayload = [escapedPayload stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
     escapedPayload = [escapedPayload stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
