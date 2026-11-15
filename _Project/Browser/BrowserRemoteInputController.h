@@ -19,6 +19,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)browserRemoteInputControllerHandlePrimaryAction;
 - (void)browserRemoteInputControllerHandleMenuPress;
 - (void)browserRemoteInputControllerHandlePlayPausePress;
+- (void)browserRemoteInputControllerHandlePseudoFullscreenPress;
 - (void)browserRemoteInputControllerHandleAdvancedMenuPress;
 - (NSString *)browserRemoteInputControllerHoverStateAtCursorPoint:(CGPoint)point;
 - (void)browserRemoteInputControllerSetWebInteractionEnabled:(BOOL)enabled;
