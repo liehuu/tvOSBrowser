@@ -81,6 +81,12 @@ static NSString * const kEditableElementSelector = @"input, textarea, select, [c
                         "}"
                         "var resolvedElement = resolveElement(document, x, y);"
                         "var interactiveElement = closestMatch(resolvedElement, interactiveSelector);"
+                        // Click-assist for tiny controls. The engine injected by BrowserWebView
+                        // exposes a ring sampler; keep the exact hit result for link/field logic
+                        // and only use the snapped element for the actual click.
+                        "var snappedInteractiveElement = interactiveElement ||"
+                            " (typeof window.__browserNearestInteractive === 'function' ?"
+                            "  window.__browserNearestInteractive(x, y, 26, interactiveSelector) : null);"
                         "var editableElement = closestMatch(resolvedElement, editableSelector);"
                         "%@"
                         "})()",
