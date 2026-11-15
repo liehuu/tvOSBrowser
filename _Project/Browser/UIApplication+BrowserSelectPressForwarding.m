@@ -9,9 +9,6 @@ NSString * const BrowserGlobalArrowPressTypeKey = @"type";
 NSString * const BrowserGlobalArrowPressBeganKey = @"began";
 NSString * const BrowserGlobalLongPressNotification = @"BrowserGlobalLongPressNotification";
 NSString * const BrowserGlobalLongPressTypeKey = @"type";
-NSString * const BrowserGlobalLongPressSourceKey = @"source";
-NSString * const BrowserGlobalLongPressSourceHold = @"hold";
-NSString * const BrowserGlobalLongPressSourceAuxKey = @"aux";
 static BOOL sBrowserNativeScrubTracking = NO;
 static CGFloat sBrowserNativePendingScrubPixels = 0.0;
 static CGPoint sBrowserNativeLastTouchLocation = {0, 0};
@@ -20,12 +17,32 @@ static UIPressType sBrowserNativeLastArrowPressType = (UIPressType)-1;
 static CGFloat const kBrowserNativeScrubPixelStep = 18.0;
 static CFTimeInterval const kBrowserNativeArrowDoubleTapInterval = 0.35;
 static CFTimeInterval const kBrowserLongPressMinimumDuration = 0.55;
-static CFTimeInterval sBrowserPlayPauseBeganTimestamp = 0.0;
-static CFTimeInterval sBrowserMenuBeganTimestamp = 0.0;
-static BOOL sBrowserPlayPauseLongPressFired = NO;
-static BOOL sBrowserMenuLongPressFired = NO;
-static NSUInteger sBrowserPlayPauseLongPressGeneration = 0;
-static NSUInteger sBrowserMenuLongPressGeneration = 0;
+// Select is the ordinary click, so its hold threshold is longer: a slightly slow click on a link
+// must not turn into fullscreen.
+static CFTimeInterval const kBrowserSelectLongPressMinimumDuration = 0.85;
+
+// Two slots: Play/Pause and Select. The Play/Pause button does toggle pseudo fullscreen, but many
+// third-party and learning remotes have no Play/Pause key at all, so holding the clickpad (Select)
+// is the universal shortcut. Both are measured here, in the only channel that sees these presses.
+typedef NS_ENUM(NSInteger, BrowserLongPressSlot) {
+    BrowserLongPressSlotPlayPause = 0,
+    BrowserLongPressSlotSelect = 1,
+    BrowserLongPressSlotCount = 2
+};
+
+static CFTimeInterval sBrowserLongPressBeganTimestamps[BrowserLongPressSlotCount] = {0.0, 0.0};
+static NSUInteger sBrowserLongPressGenerations[BrowserLongPressSlotCount] = {0, 0};
+// Set when a Select hold already acted. The Select-ended notification is then suppressed, so the
+// click that follows the hold does not also run.
+static BOOL sBrowserSelectLongPressFired = NO;
+
+static NSInteger BrowserLongPressSlotForType(UIPressType type) {
+    switch (type) {
+        case UIPressTypePlayPause: return BrowserLongPressSlotPlayPause;
+        case UIPressTypeSelect: return BrowserLongPressSlotSelect;
+        default: return -1;
+    }
+}
 
 static NSString *BrowserPressTypeString(UIPressType type) {
     switch (type) {
@@ -135,79 +152,46 @@ static void BrowserPublishArrowPress(UIPressType type, BOOL began) {
 
 #pragma mark - Long press forwarding
 
-// GCEventViewController hands Menu/PlayPause to the GameController framework before UIKit, so
-// UILongPressGestureRecognizer with allowedPressTypes never recognises them. This bridge sees every
+// GCEventViewController hands PlayPause to the GameController framework before UIKit, so
+// UILongPressGestureRecognizer with allowedPressTypes never recognises it. This bridge sees every
 // press, so the hold is measured here: timestamp on Began, fire once the threshold passes while the
-// button is still down, and suppress the release action via the flags in the input controller.
-// Menu is tracked again: tvOS only reserves the *system* home gesture after its own delay, and a
-// 0.55 s hold is reported to the app before that. Select is deliberately excluded - it is the
-// ordinary click and long-pressing it must keep working as before.
+// button is still down, and suppress the release action via the flag in the input controller.
+// Tracked buttons: PlayPause and Select. PlayPause is the documented shortcut, but remotes without
+// a Play/Pause key (learning remotes, older Siri Remotes) can hold the clickpad instead.
+// Menu is out because long-pressing Menu is the tvOS home gesture.
 static BOOL BrowserLongPressIsTrackingType(UIPressType type) {
-    return type == UIPressTypePlayPause || type == UIPressTypeMenu;
+    return BrowserLongPressSlotForType(type) >= 0;
 }
 
 static CFTimeInterval BrowserLongPressBeganTimestamp(UIPressType type) {
-    return (type == UIPressTypePlayPause) ? sBrowserPlayPauseBeganTimestamp : sBrowserMenuBeganTimestamp;
+    NSInteger slot = BrowserLongPressSlotForType(type);
+    return slot >= 0 ? sBrowserLongPressBeganTimestamps[slot] : 0.0;
 }
 
 static void BrowserLongPressSetBeganTimestamp(UIPressType type, CFTimeInterval value) {
-    if (type == UIPressTypePlayPause) {
-        sBrowserPlayPauseBeganTimestamp = value;
-    } else if (type == UIPressTypeMenu) {
-        sBrowserMenuBeganTimestamp = value;
-    }
-}
-
-static void BrowserLongPressSetFired(UIPressType type, BOOL fired) {
-    if (type == UIPressTypePlayPause) {
-        sBrowserPlayPauseLongPressFired = fired;
-    } else if (type == UIPressTypeMenu) {
-        sBrowserMenuLongPressFired = fired;
+    NSInteger slot = BrowserLongPressSlotForType(type);
+    if (slot >= 0) {
+        sBrowserLongPressBeganTimestamps[slot] = value;
     }
 }
 
 static NSUInteger BrowserLongPressBumpGeneration(UIPressType type) {
-    if (type == UIPressTypePlayPause) {
-        return ++sBrowserPlayPauseLongPressGeneration;
+    NSInteger slot = BrowserLongPressSlotForType(type);
+    if (slot < 0) {
+        return 0;
     }
-    return ++sBrowserMenuLongPressGeneration;
+    return ++sBrowserLongPressGenerations[slot];
 }
 
 static NSUInteger BrowserLongPressCurrentGeneration(UIPressType type) {
-    return (type == UIPressTypePlayPause) ? sBrowserPlayPauseLongPressGeneration
-                                          : sBrowserMenuLongPressGeneration;
+    NSInteger slot = BrowserLongPressSlotForType(type);
+    return slot >= 0 ? sBrowserLongPressGenerations[slot] : 0;
 }
 
-// Keys that tvOS itself delivers as a press but UIKit gives no UIPressType constant for. Third
-// party remotes send these (a Stop button, for instance). The favorites menu is bound to them so
-// such remotes always have a way in, in addition to long-press Menu.
-static BOOL BrowserIsUnmappedAuxPressType(UIPressType type) {
-    switch (type) {
-        case UIPressTypeUpArrow:
-        case UIPressTypeDownArrow:
-        case UIPressTypeLeftArrow:
-        case UIPressTypeRightArrow:
-        case UIPressTypeSelect:
-        case UIPressTypeMenu:
-        case UIPressTypePlayPause:
-            return NO;
-        default:
-            return YES;
-    }
-}
 
-// A remote key that tvOS delivers but UIKit has no UIPressType constant for (a Stop button on a
-// third-party remote, for instance). It opens favorites directly. The notification carries an
-// explicit "aux" source so the receiver does not set the Menu long-press suppression flag - that
-// flag belongs to Menu only, and setting it here would eat the next Menu press (no more Go Back).
-static void BrowserPublishFavoritesShortcut(void) {
-    NSLog(@"[InputTrace][App] aux press -> favorites");
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:BrowserGlobalLongPressNotification
-                                                            object:nil
-                                                          userInfo:@{BrowserGlobalLongPressTypeKey: @(UIPressTypeMenu),
-                                                                     BrowserGlobalLongPressSourceKey: BrowserGlobalLongPressSourceAuxKey}];
-    });
+static CFTimeInterval BrowserLongPressMinimumDurationForType(UIPressType type) {
+    return (type == UIPressTypeSelect) ? kBrowserSelectLongPressMinimumDuration
+                                       : kBrowserLongPressMinimumDuration;
 }
 
 static void BrowserLongPressBeginTracking(UIApplication *application, UIPressType type) {
@@ -221,12 +205,14 @@ static void BrowserLongPressBeginTracking(UIApplication *application, UIPressTyp
         return;
     }
 
+    CFTimeInterval threshold = BrowserLongPressMinimumDurationForType(type);
     BrowserLongPressSetBeganTimestamp(type, CACurrentMediaTime());
-    BrowserLongPressSetFired(type, NO);
     NSUInteger generation = BrowserLongPressBumpGeneration(type);
 
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kBrowserLongPressMinimumDuration * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(threshold * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
+        // A release (or a new press of the same button) bumps the generation and cancels this check,
+        // so a short tap can never be mistaken for a hold.
         if (BrowserLongPressCurrentGeneration(type) != generation) {
             return;
         }
@@ -235,7 +221,7 @@ static void BrowserLongPressBeginTracking(UIApplication *application, UIPressTyp
             return;
         }
         CFTimeInterval held = CACurrentMediaTime() - began;
-        if (held + 0.02 < kBrowserLongPressMinimumDuration) {
+        if (held + 0.02 < threshold) {
             return;
         }
         if (nativeVideoPlayerClass != Nil &&
@@ -243,12 +229,14 @@ static void BrowserLongPressBeginTracking(UIApplication *application, UIPressTyp
             return;
         }
 
-        BrowserLongPressSetFired(type, YES);
         NSLog(@"[InputTrace][App] long press %@ fired (held %.2fs)", BrowserPressTypeString(type), held);
+        if (type == UIPressTypeSelect) {
+            // Suppress the Select-ended notification: the hold already acted.
+            sBrowserSelectLongPressFired = YES;
+        }
         [[NSNotificationCenter defaultCenter] postNotificationName:BrowserGlobalLongPressNotification
                                                             object:nil
-                                                          userInfo:@{BrowserGlobalLongPressTypeKey: @(type),
-                                                                     BrowserGlobalLongPressSourceKey: BrowserGlobalLongPressSourceHold}];
+                                                          userInfo:@{BrowserGlobalLongPressTypeKey: @(type)}];
     });
 }
 
@@ -260,7 +248,6 @@ static void BrowserLongPressEndTracking(UIPressType type) {
     }
     BrowserLongPressBumpGeneration(type);           // cancel the pending threshold check
     BrowserLongPressSetBeganTimestamp(type, 0.0);
-    BrowserLongPressSetFired(type, NO);
 }
 
 @implementation UIApplication (BrowserSelectPressForwarding)
@@ -358,25 +345,16 @@ static void BrowserLongPressEndTracking(UIPressType type) {
             BrowserPublishArrowPress(press.type, press.phase == UIPressPhaseBegan);
         }
 
-        // Long press detection (PlayPause => fullscreen, Menu => favorites). Began starts the clock;
-        // the threshold fires from a timer so the action happens while the button is still held.
-        // The event itself is NOT swallowed here: dropping it would leave UIKit gesture recognizers
-        // mid-gesture. The single-tap action is suppressed on release instead, by the flags in
-        // BrowserRemoteInputController.
+        // Long press detection (PlayPause => fullscreen). Began starts the clock; the threshold fires
+        // from a timer so the action happens while the button is still held. The event itself is NOT
+        // swallowed here: dropping it would leave UIKit gesture recognizers mid-gesture. The
+        // single-tap action is suppressed on release instead, by the flag in BrowserRemoteInputController.
         if (BrowserLongPressIsTrackingType(press.type)) {
             if (press.phase == UIPressPhaseBegan) {
                 BrowserLongPressBeginTracking(self, press.type);
             } else if (press.phase == UIPressPhaseEnded || press.phase == UIPressPhaseCancelled) {
                 BrowserLongPressEndTracking(press.type);
             }
-        }
-
-        // Any key UIKit has no constant for (third-party remote buttons such as Stop) opens favorites
-        // directly, on press-down only, and never while the native player is on screen.
-        if (BrowserIsUnmappedAuxPressType(press.type) &&
-            press.phase == UIPressPhaseBegan &&
-            nativeVideoPlayerViewController == nil) {
-            BrowserPublishFavoritesShortcut();
         }
 
         if (press.type == UIPressTypeMenu && press.phase == UIPressPhaseBegan) {
@@ -448,6 +426,11 @@ static void BrowserLongPressEndTracking(UIPressType type) {
 
     for (UIPress *press in presses) {
         if (press.type == UIPressTypeSelect && press.phase == UIPressPhaseEnded) {
+            if (sBrowserSelectLongPressFired) {
+                sBrowserSelectLongPressFired = NO;
+                NSLog(@"[InputTrace][App] suppress Select-ended notification after hold");
+                break;
+            }
             NSLog(@"[InputTrace][App] post BrowserGlobalSelectPressEndedNotification");
             dispatch_async(dispatch_get_main_queue(), ^{
                 [[NSNotificationCenter defaultCenter] postNotificationName:BrowserGlobalSelectPressEndedNotification object:nil];
