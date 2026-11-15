@@ -3,6 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSInteger, BrowserTopBarAction) {
+    BrowserTopBarActionNone = -1,
     BrowserTopBarActionBack = 0,
     BrowserTopBarActionRefresh,
     BrowserTopBarActionForward,
@@ -37,6 +38,7 @@ typedef NS_ENUM(NSInteger, BrowserTopBarAction) {
 @property (nonatomic, readonly) UIActivityIndicatorView *loadingSpinner;
 @property (nonatomic, readonly, getter=isFocusModeActive) BOOL focusModeActive;
 
+- (BrowserTopBarAction)actionForPoint:(CGPoint)point;
 - (CGRect)interactiveFrameForView:(UIView *)view;
 - (void)setFocusModeActive:(BOOL)focusModeActive;
 - (nullable UIView *)preferredFocusItem;
