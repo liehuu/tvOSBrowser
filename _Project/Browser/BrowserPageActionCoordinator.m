@@ -193,7 +193,7 @@ static UIColor *BrowserPageActionTextColor(void) {
                                                                                                 "return type;"];
     [self.domInteractionService evaluateResolvedElementJavaScriptAtPoint:point
                                                                  webView:webView
-                                                                    body:@"var target = editableElement || interactiveElement || resolvedElement;"
+                                                                    body:@"var target = editableElement || snappedInteractiveElement || resolvedElement;"
                                                                          "if (!target) { return 'false'; }"
                                                                          "try { if (target.focus) { target.focus(); } } catch (error) {}"
                                                                          "function dispatchPointerLikeEvent(type, constructorName) {"
