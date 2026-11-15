@@ -322,8 +322,38 @@ static void BrowserConfigureMediaPlaybackPolicy(id configuration) {
     }
 }
 
-static NSString *BrowserYouTubeRequestCaptureScript(void) {
-    return
+/// build-17: give every request a plausible top-level Referer.
+///
+/// Youku checks the Referer on both the document navigation and the in-page playlist/media
+/// requests that follow it. A WKWebView that sends none is trivially distinguishable from a
+/// desktop browser, and the player answers with "log in to continue" -- which is exactly the
+/// report from a TV whose Windows Chrome, never logged in, plays the same page fine. The custom
+/// user agent alone cannot fix that because it never touches Referer.
+///
+/// `_setReferrer:` is the same private WebKit SPI used for the other media quirks in this file.
+/// It is looked up defensively: on a system that does not expose it the browser simply keeps
+/// its previous behaviour, and the document-level header set by BrowserNavigationService still
+/// applies to the navigation itself.
+static void BrowserConfigureDefaultReferrer(id configuration) {
+    if (configuration == nil) {
+        return;
+    }
+
+    SEL setReferrerSelector = NSSelectorFromString(@"_setReferrer:");
+    if (![configuration respondsToSelector:setReferrerSelector]) {
+        NSLog(@"[Referer] _setReferrer: unavailable; document navigation keeps its header only");
+        return;
+    }
+
+    // A generic, site-neutral default. Per-site origins are supplied for the document request by
+    // BrowserNavigationService; this value is what pages see on sub-resource and XHR traffic, and
+    // it deliberately names a real https origin instead of being empty.
+    NSString *referrer = @"https://www.baidu.com/";
+    ((void (*)(id, SEL, id))objc_msgSend)(configuration, setReferrerSelector, referrer);
+    NSLog(@"[Referer] default referer installed");
+}
+
+static NSString *BrowserYouTubeRequestCaptureScript(void) {    return
     @"(function(){"
         "if (window.__browserYouTubeHookInstalled) { return; }"
         "window.__browserYouTubeHookInstalled = true;"
@@ -1222,6 +1252,7 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     BrowserConfigureMediaPlaybackPolicy(configuration);
     BrowserInstallFullscreenInterceptUserScript(configuration);
     BrowserInstallYouTubeCaptureUserScript(configuration);
+    BrowserConfigureDefaultReferrer(configuration);
 
     id webViewObject = ((id (*)(id, SEL))objc_msgSend)((id)webViewClass, @selector(alloc));
     SEL initializer = NSSelectorFromString(@"initWithFrame:configuration:");
