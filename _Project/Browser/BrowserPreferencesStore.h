@@ -14,6 +14,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic) BOOL fullscreenVideoPlaybackEnabled;
 @property (nonatomic) BOOL scalePagesToFit;
 @property (nonatomic) BOOL dontShowHintsOnLaunch;
+@property (nonatomic) BOOL dontShowFavoritesOnLaunch;
 @property (nonatomic, copy) NSString *homePageURLString;
 
 - (void)ensureUserAgentConsistency;
