@@ -544,7 +544,12 @@ static CGFloat const kTabCardURLHeight = 64.0;
 
 - (void)handleCloseRequestForDisplayItemIndex:(NSInteger)displayItemIndex {
     NSInteger tabIndex = displayItemIndex;
-    if (tabIndex < 0 || tabIndex >= self.viewModel.tabs.count || self.viewModel.tabs.count <= 1) {
+    // build-17: the old guard also refused whenever tabs.count <= 1, so the single visible tab --
+    // which is exactly the tab you are looking at when you open the overview -- could never be
+    // closed with an up-swipe. Only the range check belongs here: BrowserTabCoordinator already
+    // creates a fresh home-page tab when the last one goes away, so there is no empty state to
+    // protect against.
+    if (tabIndex < 0 || tabIndex >= self.viewModel.tabs.count) {
         return;
     }
 
