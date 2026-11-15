@@ -225,7 +225,7 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
 
     NSURLRequest *request = self.activeWebView.request;
     NSString *currentURL = tab.URLString.length > 0 ? tab.URLString : request.URL.absoluteString;
-    self.topMenuView.URLLabel.text = currentURL.length > 0 ? currentURL : @"New Tab";
+    self.topMenuView.URLLabel.text = currentURL.length > 0 ? currentURL : @"新建标签页";
 
     if (request != nil) {
         [self.host browserTabCoordinatorUpdateTextFontSize];
@@ -449,10 +449,10 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
 }
 
 - (void)showMaxTabsAlert {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Maximum Tabs Reached"
-                                                                             message:@"This build keeps up to five tabs open at once."
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"已达标签页上限"
+                                                                             message:@"此版本最多同时打开五个标签页。"
                                                                       preferredStyle:UIAlertControllerStyleAlert];
-    [alertController addAction:[UIAlertAction actionWithTitle:@"Dismiss"
+    [alertController addAction:[UIAlertAction actionWithTitle:@"关闭"
                                                         style:UIAlertActionStyleCancel
                                                       handler:nil]];
     [self.host browserTabCoordinatorPresentViewController:alertController];
