@@ -63,7 +63,6 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic) CFTimeInterval lastArrowEndedTimestamp;
 @property (nonatomic) UIPressType lastArrowEndedType;
 @property (nonatomic) BOOL playPauseLongPressConsumed;
-@property (nonatomic) BOOL menuLongPressConsumed;
 @property (nonatomic) BOOL selectLongPressConsumed;
 @property (nonatomic) CFTimeInterval lastSelectLongPressTimestamp;
 // Tiered seek in pseudo fullscreen: 1 tap = 10 s, 2 taps = 60 s, 3+ taps = 300 s.
@@ -299,18 +298,12 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         return;
     }
 
-    if (type == UIPressTypeMenu) {
-        NSLog(@"[LongPress] Menu -> favorites");
-        self.menuLongPressConsumed = YES;
-        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
-        [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.5];
-        [self.host browserRemoteInputControllerHandleFavoritesPress];
-    }
+    // No Menu branch here on purpose: long-pressing Menu is the tvOS home gesture, so the bridge
+    // never posts it. Favorites lives in the top bar and opens on launch.
 }
 
 - (void)clearLongPressConsumedFlags {
     self.playPauseLongPressConsumed = NO;
-    self.menuLongPressConsumed = NO;
     self.selectLongPressConsumed = NO;
 }
 
@@ -710,12 +703,6 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
     if (press.type == UIPressTypeSelect && self.selectLongPressConsumed) {
         self.selectLongPressConsumed = NO;
         NSLog(@"[InputTrace][Root] swallow Select release after long press");
-        return YES;
-    }
-
-    if (press.type == UIPressTypeMenu && self.menuLongPressConsumed) {
-        self.menuLongPressConsumed = NO;
-        NSLog(@"[InputTrace][Root] swallow Menu release after long press");
         return YES;
     }
 
