@@ -538,16 +538,16 @@ static NSString *BrowserFullscreenInterceptScript(void) {
     NSString *source =
     @"(function(){"
         // ---- desktop environment normalisation ---------------------------------------------
-        // customUserAgent is already a desktop Safari string, but tvOS WebKit still exposes device
-        // fingerprints (navigator.platform = AppleTV, etc.). Sites that gate playback behind
+        // customUserAgent is already a desktop Safari/Chrome string, but tvOS WebKit still exposes
+        // device fingerprints (navigator.platform = AppleTV, etc.). Sites that gate playback behind
         // "install our app" read those extra fields, so align them with the user agent. The UA
-        // itself is NOT overridden here: the Desktop/Mobile switch in Advanced Menu must still work.
+        // itself is NOT overridden here: the Advanced Menu UA switch must still work.
+        // build-16: normalise EVERY frame, not just the top frame. Sites such as Youku run their
+        // playback / environment checks inside iframes; leaving child frames as AppleTV broke
+        // navigation there. The per-frame cost is a handful of property definitions.
         "try{"
             "var nav=window.navigator;"
-            // Only the main frame needs the desktop fingerprint. This script is injected into
-            // every frame (including ad iframes); normalising all of them adds per-frame work
-            // without changing what a site's top-level player detection can see.
-            "if(nav&&window===window.top){"
+            "if(nav){"
                 "var ua=String(nav.userAgent||'');"
                 "var mobile=/iPhone|iPad|iPod|Mobile/.test(ua);"
                 "var plat=mobile?'iPhone':'MacIntel';"
@@ -575,7 +575,9 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                 "while(cand){if(cand.matches&&cand.matches(selector)){found=cand;break;}cand=cand.parentElement;}"
                 "if(!found){continue;}"
                 "var r=found.getBoundingClientRect();"
-                "if(!r||r.width<=0||r.height<=0){continue;}"
+                // build-16: only snap to genuinely SMALL controls. Snapping onto a large poster
+                // card or a big link hijacks clicks on video/catalogue pages (Youku regression).
+                "if(!r||r.width<=0||r.height<=0||r.width>44||r.height>44){continue;}"
                 "var cx=r.left+r.width/2,cy=r.top+r.height/2;"
                 "var d=Math.sqrt((cx-px)*(cx-px)+(cy-py)*(cy-py));"
                 "if(d<=radius&&d<bestD){best=found;bestD=d;}"
@@ -934,6 +936,44 @@ static NSString *BrowserFullscreenInterceptScript(void) {
         "}"
         "window.__browserPfFanOutMessage=pfFanOutMessage;"
 
+        // build-16: episode/playlist lists are inner overflow containers, not the document.
+        // Walk up from the element under the cursor and scroll the first scrollable ancestor.
+        // 'inner' = an inner container moved (native UIScrollView must NOT also scroll);
+        // 'iframe' = the hit element is an iframe, delegated to that child frame;
+        // 'none' = nothing inner moved, native document scroll is the fallback.
+        // overflow:hidden is accepted on purpose: many sites build custom scrollers that still
+        // respond to a programmatic scrollTop assignment.
+        "function pfScrollAtPoint(px,py,dx,dy){"
+            "var el=null;"
+            "try{el=document.elementFromPoint(px,py);}catch(e){return 'none';}"
+            "if(!el){return 'none';}"
+            "if(el.tagName==='IFRAME'||el.tagName==='FRAME'){"
+                "var r=null;try{r=el.getBoundingClientRect();}catch(e){}"
+                "var ix=px,iy=py;"
+                "if(r){ix=px-r.left;iy=py-r.top;}"
+                "try{el.contentWindow.postMessage({__browserPf:'scrollAt',x:ix,y:iy,dx:dx,dy:dy},'*');}catch(e){}"
+                "return 'iframe';"
+            "}"
+            "var node=el;"
+            "for(var depth=0;node&&node.nodeType===1&&depth<40;depth++){"
+                "if(node===document.body||node===document.documentElement){break;}"
+                "var canY=node.scrollHeight>node.clientHeight+1;"
+                "var canX=node.scrollWidth>node.clientWidth+1;"
+                "if(canY||canX){"
+                    "var st=null;try{st=window.getComputedStyle(node);}catch(e){}"
+                    "var oy=st?(st.overflowY||''):'visible';"
+                    "var ox=st?(st.overflowX||''):'visible';"
+                    "var bt=node.scrollTop,bl=node.scrollLeft;"
+                    "if(canY&&oy!=='visible'){node.scrollTop=bt+dy;}"
+                    "if(canX&&ox!=='visible'){node.scrollLeft=bl+dx;}"
+                    "if(node.scrollTop!==bt||node.scrollLeft!==bl){return 'inner';}"
+                "}"
+                "node=node.parentNode;"
+            "}"
+            "return 'none';"
+        "}"
+        "window.__browserPfScrollAtPoint=pfScrollAtPoint;"
+
         "if(!window.__browserPfListenerInstalled){"
             "window.__browserPfListenerInstalled=true;"
             "window.addEventListener('message',function(ev){"
@@ -972,6 +1012,12 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                         "try{window.__browserPfRemoteState=d.state;}catch(e){}"
                         // Keep bubbling up: a player nested two frames deep must still reach the top.
                         "try{if(window.parent&&window.parent!==window){window.parent.postMessage({__browserPf:'stateReply',state:d.state},'*');}}catch(e){}"
+                    "}"
+                    // build-16: a delegated scroll from the parent. No inner container means this
+                    // frame's own document should scroll (the page-level UIScrollView cannot).
+                    "else if(d.__browserPf==='scrollAt'&&typeof d.dx!=='undefined'&&typeof d.dy!=='undefined'){"
+                        "var said=pfScrollAtPoint(Number(d.x)||0,Number(d.y)||0,Number(d.dx)||0,Number(d.dy)||0);"
+                        "if(said==='none'){try{window.scrollBy(Number(d.dx)||0,Number(d.dy)||0);}catch(e){}}"
                     "}"
                 "}catch(e){}"
             "},false);"
