@@ -103,7 +103,7 @@ typedef void (^BrowserAdvancedMenuItemHandler)(void);
                    footerText:(NSString *)footerText {
     self = [super initWithNibName:nil bundle:nil];
     if (self) {
-        _menuTitle = [title copy] ?: @"Menu";
+        _menuTitle = [title copy] ?: @"菜单";
         _sections = [sections copy] ?: @[];
         _footerText = [footerText copy] ?: @"";
         self.modalPresentationStyle = UIModalPresentationOverCurrentContext;
@@ -521,8 +521,8 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 
 - (void)presentDeleteFavoriteMenu {
     NSArray *favorites = [[NSUserDefaults standardUserDefaults] arrayForKey:@"FAVORITES"];
-    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Delete a Favorite"
-                                                                       message:@"Select a Favorite to Delete"];
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"删除收藏"
+                                                                       message:@"选择要删除的收藏"];
     __weak typeof(self) weakSelf = self;
     
     [favorites enumerateObjectsUsingBlock:^(NSArray *entry, NSUInteger index, BOOL *stop) {
@@ -550,19 +550,19 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     NSString *pageTitle = [[self.host browserWebView] title];
     NSURLRequest *request = [[self.host browserWebView] request];
     NSString *currentURL = request.URL.absoluteString ?: @"";
-    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Name New Favorite"
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"为新收藏命名"
                                                                        message:currentURL];
     __weak typeof(self) weakSelf = self;
     
     [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.keyboardType = UIKeyboardTypeDefault;
-        textField.placeholder = @"Name New Favorite";
+        textField.placeholder = @"为新收藏命名";
         textField.text = pageTitle;
         textField.textColor = MenuTextColor();
         [textField setReturnKeyType:UIReturnKeyDone];
     }];
     
-    [alertController addAction:[self browserActionWithTitle:@"Save"
+    [alertController addAction:[self browserActionWithTitle:@"保存"
                                                       style:UIAlertActionStyleDestructive
                                                     handler:^(__unused UIAlertAction *action) {
         UITextField *titleTextField = alertController.textFields.firstObject;
@@ -590,7 +590,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 - (void)showFavoritesMenuWithAutoLaunchOption:(BOOL)includeAutoLaunchOption
                                   completion:(void (^ _Nullable)(void))completion {
     NSArray *favorites = [[NSUserDefaults standardUserDefaults] arrayForKey:@"FAVORITES"];
-    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Favorites" message:@""];
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"收藏" message:@""];
     __weak typeof(self) weakSelf = self;
 
     // The menu can be dismissed by picking an entry or by cancelling; both must run the
@@ -627,7 +627,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     }];
     
     if (favorites.count > 0) {
-        [alertController addAction:[self browserActionWithTitle:@"Delete a Favorite"
+        [alertController addAction:[self browserActionWithTitle:@"删除收藏"
                                                           style:UIAlertActionStyleDestructive
                                                         handler:^(__unused UIAlertAction *action) {
             [weakSelf presentDeleteFavoriteMenu];
@@ -635,13 +635,13 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
         }]];
     }
     
-    [alertController addAction:[self browserActionWithTitle:@"Add Current Page to Favorites"
+    [alertController addAction:[self browserActionWithTitle:@"把当前页面加入收藏"
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(__unused UIAlertAction *action) {
         [weakSelf presentAddFavoritePrompt];
         finish();
     }]];
-    [alertController addAction:[self browserActionWithTitle:@"Add Favorite by URL"
+    [alertController addAction:[self browserActionWithTitle:@"通过网址添加收藏"
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(__unused UIAlertAction *action) {
         [weakSelf presentAddFavoriteByURLPrompt];
@@ -650,7 +650,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 
     if (includeAutoLaunchOption) {
         __weak typeof(self) weakSelf2 = self;
-        [alertController addAction:[self browserActionWithTitle:@"Don't Open Favorites on Launch"
+        [alertController addAction:[self browserActionWithTitle:@"启动时不要打开收藏"
                                                           style:UIAlertActionStyleDestructive
                                                         handler:^(__unused UIAlertAction *action) {
             weakSelf2.preferencesStore.dontShowFavoritesOnLaunch = YES;
@@ -668,8 +668,8 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 
 // Lets the user pre-configure shortcuts without visiting each site first.
 - (void)presentAddFavoriteByURLPrompt {
-    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Add Favorite by URL"
-                                                                       message:@"Enter the address, then a name."];
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"通过网址添加收藏"
+                                                                       message:@"输入网址，再输入名称。"];
     __weak typeof(self) weakSelf = self;
 
     [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
@@ -682,12 +682,12 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     }];
     [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.keyboardType = UIKeyboardTypeDefault;
-        textField.placeholder = @"Name (optional)";
+        textField.placeholder = @"名称（可选）";
         textField.textColor = MenuTextColor();
         [textField setReturnKeyType:UIReturnKeyDone];
     }];
 
-    [alertController addAction:[self browserActionWithTitle:@"Save"
+    [alertController addAction:[self browserActionWithTitle:@"保存"
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(__unused UIAlertAction *action) {
         NSString *urlString = [alertController.textFields.firstObject.text
@@ -719,11 +719,11 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 
 - (void)presentHistoryMenu {
     NSArray *historyEntries = [[NSUserDefaults standardUserDefaults] arrayForKey:@"HISTORY"];
-    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"History" message:@""];
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"历史记录" message:@""];
     __weak typeof(self) weakSelf = self;
     
     if (historyEntries.count > 0) {
-        [alertController addAction:[self browserActionWithTitle:@"Clear History"
+        [alertController addAction:[self browserActionWithTitle:@"清除历史记录"
                                                           style:UIAlertActionStyleDestructive
                                                         handler:^(__unused UIAlertAction *action) {
             [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"HISTORY"];
@@ -891,17 +891,21 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     return fallback;
 }
 
+- (NSString *)userAgentModeDisplayName {
+    NSArray<NSString *> *names = @[@"桌面 Safari", @"移动 Safari", @"桌面 Chrome"];
+    return names[self.preferencesStore.userAgentMode];
+}
+
 - (void)presentMediaDiagnostics {
     NSDictionary *diagnostics = [self mediaDiagnosticsDictionary];
     if (diagnostics == nil) {
-        UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Media Diagnostics"
-                                                                           message:@"The page did not return diagnostics data."];
+        UIAlertController *alertController = [self browserAlertControllerWithTitle:@"媒体诊断"
+                                                                           message:@"页面未返回诊断数据。"];
         [alertController addAction:[self browserCancelAction]];
         [self.host browserPresentViewController:alertController];
         return;
     }
 
-    BOOL mobileModeEnabled = self.preferencesStore.mobileModeEnabled;
     NSString *message = [NSString stringWithFormat:
                          @"Mode: %@\n"
                           "URL: %@\n"
@@ -927,14 +931,14 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                           "MSE WebM VP9: %@\n"
                           "MSE MP4 AV1: %@\n"
                           "MSE WebM AV1: %@",
-                         mobileModeEnabled ? @"Mobile" : @"Desktop",
-                         [self stringValueForDiagnosticsKey:@"href" dictionary:diagnostics fallback:@"Unavailable"],
-                         [self stringValueForDiagnosticsKey:@"userAgent" dictionary:diagnostics fallback:@"Unavailable"],
+                         [self userAgentModeDisplayName],
+                         [self stringValueForDiagnosticsKey:@"href" dictionary:diagnostics fallback:@"不可用"],
+                         [self stringValueForDiagnosticsKey:@"userAgent" dictionary:diagnostics fallback:@"不可用"],
                          [self stringValueForDiagnosticsKey:@"mediaSource" dictionary:diagnostics fallback:@"n/a"],
                          [self stringValueForDiagnosticsKey:@"managedMediaSource" dictionary:diagnostics fallback:@"n/a"],
                          [self stringValueForDiagnosticsKey:@"mediaCapabilities" dictionary:diagnostics fallback:@"n/a"],
                          [self stringValueForDiagnosticsKey:@"videoElement" dictionary:diagnostics fallback:@"n/a"],
-                         [self stringValueForDiagnosticsKey:@"videoSrc" dictionary:diagnostics fallback:@"Unavailable"],
+                         [self stringValueForDiagnosticsKey:@"videoSrc" dictionary:diagnostics fallback:@"不可用"],
                          [self stringValueForDiagnosticsKey:@"globalMediaSource" dictionary:diagnostics fallback:@"n/a"],
                          [self stringValueForDiagnosticsKey:@"globalManagedMediaSource" dictionary:diagnostics fallback:@"n/a"],
                          [self stringValueForDiagnosticsKey:@"globalWebKitMediaSource" dictionary:diagnostics fallback:@"n/a"],
@@ -954,7 +958,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 
     NSLog(@"%@ %@", kBrowserMediaDiagnosticsLogPrefix, message);
 
-    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Media Diagnostics"
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"媒体诊断"
                                                                        message:message];
     [alertController addAction:[self browserCancelAction]];
     [self.host browserPresentViewController:alertController];
@@ -963,34 +967,34 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 - (void)presentWebKitRuntimeMediaPreferences {
     NSString *report = [[self.host browserWebView] runtimeMediaPreferenceReport];
     if (![self stringHasVisibleContent:report]) {
-        report = @"No runtime WebKit media preference information was returned.";
+        report = @"未返回运行时 WebKit 媒体偏好信息。";
     }
 
     NSLog(@"%@ %@", kBrowserWebKitMediaPrefsLogPrefix, report);
 
     NSString *message = report;
     if (message.length > 1800) {
-        message = [[message substringToIndex:1800] stringByAppendingString:@"\n\nFull report logged to console."];
+        message = [[message substringToIndex:1800] stringByAppendingString:@"\n\n完整报告已输出到控制台。"];
     }
 
-    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"WebKit Media Prefs"
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"WebKit 媒体偏好"
                                                                        message:message];
     [alertController addAction:[self browserCancelAction]];
     [self.host browserPresentViewController:alertController];
 }
 
 - (BrowserAdvancedMenuItem *)topNavigationVisibilityMenuItem {
-    NSString *title = self.host.browserTopMenuShowing ? @"Hide Top Navigation bar" : @"Show Top Navigation bar";
+    NSString *title = self.host.browserTopMenuShowing ? @"隐藏顶部导航栏" : @"显示顶部导航栏";
     return [self advancedMenuItemWithTitle:title
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         if (self.host.browserTopMenuShowing) {
-            UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Hide Top Navigation bar?"
-                                                                               message:@"You can still open the side menu by double-tapping the Play/Pause button."];
-            [alertController addAction:[self browserActionWithTitle:@"Cancel"
+            UIAlertController *alertController = [self browserAlertControllerWithTitle:@"隐藏顶部导航栏？"
+                                                                               message:@"仍可双击 Play/Pause 键打开侧边菜单。"];
+            [alertController addAction:[self browserActionWithTitle:@"取消"
                                                               style:UIAlertActionStyleCancel
                                                             handler:nil]];
-            [alertController addAction:[self browserActionWithTitle:@"Hide Bar"
+            [alertController addAction:[self browserActionWithTitle:@"隐藏顶栏"
                                                               style:UIAlertActionStyleDestructive
                                                             handler:^(__unused UIAlertAction *action) {
                 [self.host browserHideTopNav];
@@ -1003,7 +1007,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)homePageMenuItem {
-    return [self advancedMenuItemWithTitle:@"Go To Home Page"
+    return [self advancedMenuItemWithTitle:@"前往主页"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         [self.host browserLoadHomePage];
@@ -1011,7 +1015,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)setCurrentPageAsHomePageMenuItem {
-    return [self advancedMenuItemWithTitle:@"Set Current Page As Home Page"
+    return [self advancedMenuItemWithTitle:@"把当前页面设为主页"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         NSURLRequest *request = [[self.host browserWebView] request];
@@ -1022,7 +1026,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)usageGuideMenuItem {
-    return [self advancedMenuItemWithTitle:@"Usage Guide"
+    return [self advancedMenuItemWithTitle:@"使用说明"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         [self.host browserShowHints];
@@ -1030,7 +1034,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (UIAlertAction *)wkWebViewProofOfConceptAction {
-    return [self browserActionWithTitle:@"Open WKWebView PoC"
+    return [self browserActionWithTitle:@"打开 WKWebView 演示"
                                   style:UIAlertActionStyleDefault
                                 handler:^(__unused UIAlertAction *action) {
         Class proofOfConceptControllerClass = NSClassFromString(@"BrowserWKWebViewProofOfConceptViewController");
@@ -1039,8 +1043,8 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
             viewController = [proofOfConceptControllerClass new];
             viewController.modalPresentationStyle = UIModalPresentationFullScreen;
         } else {
-            viewController = [UIAlertController alertControllerWithTitle:@"WKWebView PoC Missing"
-                                                                 message:@"The proof-of-concept controller was not compiled into this build."
+            viewController = [UIAlertController alertControllerWithTitle:@"WKWebView 演示不可用"
+                                                                 message:@"此版本未编译演示页面控制器。"
                                                           preferredStyle:UIAlertControllerStyleAlert];
             [(UIAlertController *)viewController addAction:[self browserCancelAction]];
         }
@@ -1049,7 +1053,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)showTabsMenuItem {
-    return [self advancedMenuItemWithTitle:@"Show Tabs"
+    return [self advancedMenuItemWithTitle:@"显示标签页"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         [self.host browserShowTabOverview];
@@ -1057,7 +1061,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)newTabMenuItem {
-    return [self advancedMenuItemWithTitle:@"Open New Tab"
+    return [self advancedMenuItemWithTitle:@"新建标签页"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         [self.host browserCreateNewTabLoadingHomePage:YES];
@@ -1065,7 +1069,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)favoritesMenuItem {
-    return [self advancedMenuItemWithTitle:@"Favorites"
+    return [self advancedMenuItemWithTitle:@"收藏"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         [self presentFavoritesMenu];
@@ -1073,29 +1077,35 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (BrowserAdvancedMenuItem *)historyMenuItem {
-    return [self advancedMenuItemWithTitle:@"History"
+    return [self advancedMenuItemWithTitle:@"历史记录"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         [self presentHistoryMenu];
     }];
 }
 
+// build-16: cycle Desktop Safari -> Mobile Safari -> Desktop Chrome. Some sites (e.g. iQiyi)
+// refuse to load under a Safari/WebKit UA; a desktop Chrome identity is a generic compatibility
+// option, not a site-specific bypass. It does not defeat server-side login or app-only streams.
 - (BrowserAdvancedMenuItem *)userAgentModeMenuItem {
-    BOOL mobileModeEnabled = self.preferencesStore.mobileModeEnabled;
-    NSString *title = mobileModeEnabled ? @"Switch To Desktop User Agent" : @"Switch To Mobile User Agent";
-    NSString *userAgent = mobileModeEnabled ? BrowserPreferencesStore.desktopUserAgent : BrowserPreferencesStore.mobileUserAgent;
-    BOOL mobileMode = !mobileModeEnabled;
-    
+    NSInteger mode = self.preferencesStore.userAgentMode;
+    NSArray<NSString *> *modeNames = @[@"桌面 Safari", @"移动 Safari", @"桌面 Chrome"];
+    NSInteger nextMode = (mode + 1) % 3;
+    NSString *title = [NSString stringWithFormat:@"浏览器标识：%@（点按切换）", modeNames[mode]];
+    NSString *nextUserAgent = [BrowserPreferencesStore userAgentForMode:nextMode];
+    BOOL nextMobileMode = (nextMode == 1);
+
     return [self advancedMenuItemWithTitle:title
                                      style:UIAlertActionStyleDefault
                                    handler:^{
-        [self applyUserAgent:userAgent mobileMode:mobileMode];
+        self.preferencesStore.userAgentMode = nextMode;
+        [self applyUserAgent:nextUserAgent mobileMode:nextMobileMode];
     }];
 }
 
 - (BrowserAdvancedMenuItem *)pageScalingMenuItem {
     BOOL scalesPageToFit = [[self.host browserWebView] scalesPageToFit];
-    NSString *title = scalesPageToFit ? @"Stop Scaling Pages to Fit" : @"Scale Pages to Fit";
+    NSString *title = scalesPageToFit ? @"停止缩放页面以适配" : @"缩放页面以适配";
     return [self advancedMenuItemWithTitle:title
                                      style:UIAlertActionStyleDefault
                                    handler:^{
@@ -1104,7 +1114,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (UIAlertAction *)playVideoUnderCursorAction {
-    return [self browserActionWithTitle:@"Play Active Video"
+    return [self browserActionWithTitle:@"播放当前视频"
                                   style:UIAlertActionStyleDefault
                                 handler:^(__unused UIAlertAction *action) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1115,7 +1125,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 
 - (BrowserAdvancedMenuItem *)fullscreenVideoPlaybackToggleMenuItem {
     BOOL enabled = self.host.browserFullscreenVideoPlaybackEnabled;
-    NSString *title = enabled ? @"Disable Full Screen player" : @"Enable Full Screen player";
+    NSString *title = enabled ? @"禁用全屏播放器" : @"启用全屏播放器";
     return [self advancedMenuItemWithTitle:title
                                      style:UIAlertActionStyleDefault
                                    handler:^{
@@ -1126,7 +1136,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 // Direct fullscreen entry from the menu. This is the fallback for remotes that have no Play/Pause
 // button and where holding the clickpad is not detected.
 - (BrowserAdvancedMenuItem *)togglePseudoFullscreenMenuItem {
-    return [self advancedMenuItemWithTitle:@"Toggle Video Fullscreen"
+    return [self advancedMenuItemWithTitle:@"切换视频全屏"
                                      style:UIAlertActionStyleDefault
                                    handler:^{
         [self.host browserTogglePseudoFullscreen];
@@ -1134,52 +1144,52 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (NSArray<BrowserAdvancedMenuSection *> *)advancedMenuSections {
-    BrowserAdvancedMenuItem *increaseFontSizeItem = [self advancedMenuItemWithTitle:@"Increase Font Size"
+    BrowserAdvancedMenuItem *increaseFontSizeItem = [self advancedMenuItemWithTitle:@"增大字体"
                                                                                style:UIAlertActionStyleDefault
                                                                              handler:^{
         self.host.browserTextFontSize += 5;
         [self.host browserUpdateTextFontSize];
     }];
-    BrowserAdvancedMenuItem *decreaseFontSizeItem = [self advancedMenuItemWithTitle:@"Decrease Font Size"
+    BrowserAdvancedMenuItem *decreaseFontSizeItem = [self advancedMenuItemWithTitle:@"减小字体"
                                                                                style:UIAlertActionStyleDefault
                                                                              handler:^{
         self.host.browserTextFontSize -= 5;
         [self.host browserUpdateTextFontSize];
     }];
-    BrowserAdvancedMenuItem *resetFontSizeItem = [self advancedMenuItemWithTitle:@"Reset Font Size"
+    BrowserAdvancedMenuItem *resetFontSizeItem = [self advancedMenuItemWithTitle:@"重置字体"
                                                                             style:UIAlertActionStyleDefault
                                                                           handler:^{
         self.host.browserTextFontSize = 100;
         [self.host browserUpdateTextFontSize];
     }];
-    BrowserAdvancedMenuItem *mediaDiagnosticsItem = [self advancedMenuItemWithTitle:@"Media Diagnostics"
+    BrowserAdvancedMenuItem *mediaDiagnosticsItem = [self advancedMenuItemWithTitle:@"媒体诊断"
                                                                                style:UIAlertActionStyleDefault
                                                                              handler:^{
         [self presentMediaDiagnostics];
     }];
-    BrowserAdvancedMenuItem *webkitMediaPrefsItem = [self advancedMenuItemWithTitle:@"Inspect WebKit Media Prefs"
+    BrowserAdvancedMenuItem *webkitMediaPrefsItem = [self advancedMenuItemWithTitle:@"查看 WebKit 媒体偏好"
                                                                                 style:UIAlertActionStyleDefault
                                                                               handler:^{
         [self presentWebKitRuntimeMediaPreferences];
     }];
-    BrowserAdvancedMenuItem *clearCacheItem = [self advancedMenuItemWithTitle:@"Clear Cache"
+    BrowserAdvancedMenuItem *clearCacheItem = [self advancedMenuItemWithTitle:@"清除缓存"
                                                                          style:UIAlertActionStyleDestructive
                                                                        handler:^{
         [self clearCacheAndReload];
     }];
-    BrowserAdvancedMenuItem *clearCookiesItem = [self advancedMenuItemWithTitle:@"Clear Cookies"
+    BrowserAdvancedMenuItem *clearCookiesItem = [self advancedMenuItemWithTitle:@"清除 Cookies"
                                                                            style:UIAlertActionStyleDestructive
                                                                          handler:^{
         [self clearCookiesAndReload];
     }];
-    BrowserAdvancedMenuItem *clearAllItem = [self advancedMenuItemWithTitle:@"Clear All Browsing Data"
+    BrowserAdvancedMenuItem *clearAllItem = [self advancedMenuItemWithTitle:@"清除全部浏览数据"
                                                                       style:UIAlertActionStyleDestructive
                                                                     handler:^{
         [self clearAllBrowsingDataAndReload];
     }];
 
     return @[
-        [BrowserAdvancedMenuSection sectionWithTitle:@"Navigation"
+        [BrowserAdvancedMenuSection sectionWithTitle:@"导航"
                                                items:@[
             [self homePageMenuItem],
             [self setCurrentPageAsHomePageMenuItem],
@@ -1188,7 +1198,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
             [self showTabsMenuItem],
             [self newTabMenuItem],
         ]],
-        [BrowserAdvancedMenuSection sectionWithTitle:@"Appearance"
+        [BrowserAdvancedMenuSection sectionWithTitle:@"外观"
                                                items:@[
             [self topNavigationVisibilityMenuItem],
             [self pageScalingMenuItem],
@@ -1196,27 +1206,27 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
             decreaseFontSizeItem,
             resetFontSizeItem,
         ]],
-        [BrowserAdvancedMenuSection sectionWithTitle:@"Video Playback"
+        [BrowserAdvancedMenuSection sectionWithTitle:@"视频播放"
                                                items:@[
             [self togglePseudoFullscreenMenuItem],
             [self fullscreenVideoPlaybackToggleMenuItem],
         ]],
-        [BrowserAdvancedMenuSection sectionWithTitle:@"Compatibility"
+        [BrowserAdvancedMenuSection sectionWithTitle:@"兼容性"
                                                items:@[
             [self userAgentModeMenuItem],
         ]],
-        [BrowserAdvancedMenuSection sectionWithTitle:@"Diagnostics"
+        [BrowserAdvancedMenuSection sectionWithTitle:@"诊断"
                                                items:@[
             mediaDiagnosticsItem,
             webkitMediaPrefsItem,
         ]],
-        [BrowserAdvancedMenuSection sectionWithTitle:@"Maintenance"
+        [BrowserAdvancedMenuSection sectionWithTitle:@"维护"
                                                items:@[
             clearCacheItem,
             clearCookiesItem,
             clearAllItem,
         ]],
-        [BrowserAdvancedMenuSection sectionWithTitle:@"Help"
+        [BrowserAdvancedMenuSection sectionWithTitle:@"帮助"
                                                items:@[
             [self usageGuideMenuItem],
         ]],
@@ -1229,7 +1239,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     BOOL hasVersion = [self stringHasVisibleContent:version];
 
     if (hasVersion) {
-        return [NSString stringWithFormat:@"Version %@", version];
+        return [NSString stringWithFormat:@"版本 %@", version];
     }
     return @"";
 }
