@@ -293,6 +293,33 @@ static void BrowserConfigurePrivateMediaPreferences(id configuration) {
     BrowserSetBooleanSelectorIfAvailable(preferences, @"_setManagedMediaSourceEnabled:", YES);
     BrowserSetBooleanSelectorIfAvailable(preferences, @"_setMediaCapabilityGrantsEnabled:", YES);
     BrowserSetBooleanSelectorIfAvailable(preferences, @"_setVideoQualityIncludesDisplayCompositingEnabled:", YES);
+    BrowserSetBooleanSelectorIfAvailable(preferences, @"_setMediaUserGestureInheritsRequiredUserGesture:", NO);
+}
+
+// WebKit normally refuses play() unless the call happens inside a user activation, while pause()
+// needs no activation at all. On a tvOS remote every press *is* a user activation, but the press is
+// consumed by GCEventViewController and reaches the page through stringByEvaluatingJavaScriptFromString:,
+// which does not carry the activation. The result is exactly what was reported on device:
+// pause works, play is rejected. Clearing the requirement makes resume work.
+// WKAudiovisualMediaTypeNone == 0.
+static void BrowserConfigureMediaPlaybackPolicy(id configuration) {
+    if (configuration == nil) {
+        return;
+    }
+
+    SEL mediaTypesSelector = NSSelectorFromString(@"setMediaTypesRequiringUserActionForPlayback:");
+    if ([configuration respondsToSelector:mediaTypesSelector]) {
+        ((void (*)(id, SEL, NSUInteger))objc_msgSend)(configuration, mediaTypesSelector, (NSUInteger)0);
+        NSLog(@"[MediaPolicy] mediaTypesRequiringUserActionForPlayback -> none");
+    }
+
+    // Older / private spelling on the preferences object.
+    SEL preferencesSelector = NSSelectorFromString(@"preferences");
+    if ([configuration respondsToSelector:preferencesSelector]) {
+        id preferences = ((id (*)(id, SEL))objc_msgSend)(configuration, preferencesSelector);
+        BrowserSetBooleanSelectorIfAvailable(preferences, @"_setMediaPlaybackRequiresUserGesture:", NO);
+        BrowserSetBooleanSelectorIfAvailable(preferences, @"_setRequiresUserGestureForMediaPlayback:", NO);
+    }
 }
 
 static NSString *BrowserYouTubeRequestCaptureScript(void) {
@@ -677,13 +704,48 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                 "return v.currentTime.toFixed(2);"
             "}catch(e){return 'error';}"
         "}"
+        "function pfSyntheticClick(el){"
+            "try{"
+                "if(!el){return;}"
+                "var opts={bubbles:true,cancelable:true,composed:true};"
+                "try{el.dispatchEvent(new PointerEvent('pointerdown',opts));}catch(e){}"
+                "try{el.dispatchEvent(new MouseEvent('mousedown',opts));}catch(e){}"
+                "try{el.dispatchEvent(new PointerEvent('pointerup',opts));}catch(e){}"
+                "try{el.dispatchEvent(new MouseEvent('mouseup',opts));}catch(e){}"
+                "try{el.dispatchEvent(new MouseEvent('click',opts));}catch(e){}"
+            "}catch(e){}"
+        "}"
+        // Resume is the fragile half: pause() needs no user activation, play() does. The app clears
+        // WebKit's activation requirement, but a player library can still veto a direct play() and
+        // re-pause the element, so fall back to clicking the element the way a viewer would.
         "function pfTogglePlay(){"
             "var v=pfActiveVideo();"
             "if(!v){return 'none';}"
             "try{"
-                "if(v.paused){var p=v.play();if(p&&p.catch){p.catch(function(){});}return 'playing';}"
+                "if(v.paused){"
+                    "var p=null;"
+                    "try{p=v.play();}catch(e){p=null;}"
+                    "if(p&&typeof p.catch==='function'){"
+                        "p.catch(function(){pfSyntheticClick(v.parentElement||v);});"
+                    "}else if(!p){"
+                        "pfSyntheticClick(v.parentElement||v);"
+                    "}"
+                    // Verify a moment later: if the element is still paused, click it as well.
+                    "setTimeout(function(){"
+                        "try{"
+                            "if(v.paused){"
+                                "var q=null;try{q=v.play();}catch(e){q=null;}"
+                                "if(q&&typeof q.catch==='function'){q.catch(function(){pfSyntheticClick(v.parentElement||v);});}"
+                            "}"
+                        "}catch(e){}"
+                    "},260);"
+                    "return 'playing';"
+                "}"
                 "v.pause();return 'paused';"
-            "}catch(e){return 'error';}"
+            "}catch(e){"
+                "pfSyntheticClick(v.parentElement||v);"
+                "return 'clicked';"
+            "}"
         "}"
         "function pfDuration(){"
             "var v=pfActiveVideo();"
@@ -741,7 +803,11 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                 "var cd=null;"
                 "try{cd=fr.contentDocument||null;}catch(e){cd=null;}"
                 "if(cd&&cd.defaultView&&typeof cd.defaultView.__browserPfApply==='function'){"
-                    "try{cd.defaultView.__browserPfApply();acted=true;}catch(e){}"
+                    // Only a child that actually found a target counts, otherwise a page with an
+                    // unrelated (video-less) iframe would look like it has something to promote.
+                    "try{var said=cd.defaultView.__browserPfApply();"
+                        "if(said==='ok'||said==='iframe'){acted=true;}"
+                    "}catch(e){}"
                     "try{if(cmd==='clear'&&typeof cd.defaultView.__browserPfClear==='function'){cd.defaultView.__browserPfClear();}}catch(e){}"
                 "}else{"
                     "try{fr.contentWindow.postMessage({__browserPf:cmd},'*');}catch(e){}"
@@ -947,6 +1013,7 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(configuration, allowsInlineMediaPlaybackSelector, allowsInlineMediaPlayback);
     }
     BrowserConfigurePrivateMediaPreferences(configuration);
+    BrowserConfigureMediaPlaybackPolicy(configuration);
     BrowserInstallFullscreenInterceptUserScript(configuration);
     BrowserInstallYouTubeCaptureUserScript(configuration);
 
