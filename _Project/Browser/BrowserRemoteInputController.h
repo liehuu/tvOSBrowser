@@ -29,6 +29,15 @@ NS_ASSUME_NONNULL_BEGIN
 // playlists, side panels). Returns YES when an inner container or a delegated iframe moved,
 // so the document-level UIScrollView is not scrolled at the same time.
 - (BOOL)browserRemoteInputControllerScrollInnerContainerByDelta:(CGPoint)delta;
+// build-23: one Select press over an episode list pins that list as the arrow target, so the list
+// can be paged without first switching to scroll mode. Returns an opaque non-empty token (the
+// container's identity, stable for the life of the page) when the point sits in a scrollable
+// region, or nil when it does not. A nil answer is the "clicked somewhere else" case that clears
+// the pin.
+- (nullable NSString *)browserRemoteInputControllerActivateScrollRegionAtCursorPoint;
+// Scrolls the pinned container without re-detecting it under the cursor. NO when nothing is
+// pinned any more (page navigated, element removed), which tells the caller to drop the pin.
+- (BOOL)browserRemoteInputControllerScrollPinnedRegionByDelta:(CGPoint)delta;
 - (void)browserRemoteInputControllerHandlePseudoFullscreenPress;
 - (void)browserRemoteInputControllerHandleFavoritesPress;
 - (BOOL)browserRemoteInputControllerPseudoFullscreenActive;
