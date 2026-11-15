@@ -393,14 +393,15 @@ static NSString *BrowserObserverPolyfillScript(void) {
         "})();";
 }
 
-/// Installs the observer shims as a document-start user script, before any page script runs.
-static void BrowserInstallObserverPolyfillUserScript(id configuration) {
-    if (configuration == nil) {
-        return;
+/// Installs one document-start user script. `mainFrameOnly` NO means every frame gets it, which is
+/// required for anything that has to reach a cross-origin player.
+static BOOL BrowserInstallUserScriptForMainFrame(id configuration, NSString *source, BOOL mainFrameOnly) {
+    if (configuration == nil || source.length == 0) {
+        return NO;
     }
     Class userScriptClass = NSClassFromString(kBrowserUserScriptClassName);
     if (userScriptClass == Nil) {
-        return;
+        return NO;
     }
 
     SEL userContentControllerGetter = NSSelectorFromString(@"userContentController");
@@ -410,7 +411,7 @@ static void BrowserInstallObserverPolyfillUserScript(id configuration) {
     if (![configuration respondsToSelector:userContentControllerGetter] ||
         ![configuration respondsToSelector:setUserContentControllerSelector] ||
         ![userScriptClass instancesRespondToSelector:userScriptInitializer]) {
-        return;
+        return NO;
     }
 
     Class userContentControllerClass = NSClassFromString(kBrowserUserContentControllerClassName);
@@ -420,17 +421,25 @@ static void BrowserInstallObserverPolyfillUserScript(id configuration) {
         ((void (*)(id, SEL, id))objc_msgSend)(configuration, setUserContentControllerSelector, userContentController);
     }
     if (userContentController == nil || ![userContentController respondsToSelector:addUserScriptSelector]) {
-        return;
+        return NO;
     }
 
     id userScript = ((id (*)(id, SEL))objc_msgSend)((id)userScriptClass, @selector(alloc));
     userScript = ((id (*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)(userScript,
                                                                      userScriptInitializer,
-                                                                     BrowserObserverPolyfillScript(),
+                                                                     source,
                                                                      0,
-                                                                     NO);
-    if (userScript != nil) {
-        ((void (*)(id, SEL, id))objc_msgSend)(userContentController, addUserScriptSelector, userScript);
+                                                                     mainFrameOnly);
+    if (userScript == nil) {
+        return NO;
+    }
+    ((void (*)(id, SEL, id))objc_msgSend)(userContentController, addUserScriptSelector, userScript);
+    return YES;
+}
+
+/// Installs the observer shims as a document-start user script, before any page script runs.
+static void BrowserInstallObserverPolyfillUserScript(id configuration) {
+    if (BrowserInstallUserScriptForMainFrame(configuration, BrowserObserverPolyfillScript(), NO)) {
         NSLog(@"[Polyfill] layout-observer shims installed at document start");
     }
 }
@@ -464,6 +473,156 @@ static void BrowserConfigureDefaultReferrer(id configuration) {
     NSString *referrer = @"https://www.baidu.com/";
     ((void (*)(id, SEL, id))objc_msgSend)(configuration, setReferrerSelector, referrer);
     NSLog(@"[Referer] default referer installed");
+}
+
+/// build-21: the media-stop engine, injected into every frame at document start.
+///
+/// Why this exists at all: build-17/20 called `pauseAllMediaPlayback*` when a tab was switched or
+/// closed, and the report still came back as "the tab I closed is still playing". That call is a
+/// private WebKit entry point -- when it is absent (or when it only stops the element but not the
+/// player library driving it) nothing observable happens, and `void` means the app never finds out.
+/// This engine is the observable path, and the caller now logs how many elements it stopped.
+///
+/// Two levels of defence per frame:
+///
+///   * element level -- pause(), autoplay off, and for a MediaSource-backed element also
+///     `src = ''` + `load()`, which is what actually tears down the segment fetcher. This matters
+///     for Youku / iQiyi / Bilibili: pausing an MSE element leaves its XHR loop running, so the
+///     "closed" tab keeps downloading and can start playing again on the player's own retry timer.
+///   * library level -- a `pause` postMessage to common embeds, which is the only way a
+///     cross-origin iframe can be reached at all.
+///
+/// `depth` bounds the recursion: same-origin child frames are entered directly, everything else
+/// gets the message. Re-entry is guarded by a window flag so two overlapping pauses cannot recurse
+/// into each other.
+static NSString *BrowserWebViewPauseEngineScript(void) {
+    return @"(function(){"
+        "if(window.__browserPauseEngineInstalled){return;}"
+        "window.__browserPauseEngineInstalled=true;"
+
+        "function safe(fn){try{return fn();}catch(error){return undefined;}}"
+
+        // Remember elements we already stopped so a timer-driven player cannot silently restart
+        // them: the guard is installed once per element, not once per pause request.
+        "function guardElement(element){"
+            "if(!element||element.__browserPauseGuarded){return;}"
+            "element.__browserPauseGuarded=true;"
+            "safe(function(){"
+                "element.addEventListener('play',function(){"
+                    "safe(function(){element.pause();});"
+                "},true);"
+            "});"
+        "}"
+
+        "function stopElement(element){"
+            "if(!element){return 0;}"
+            "guardElement(element);"
+            "safe(function(){element.pause();});"
+            "safe(function(){element.autoplay=false;});"
+            "safe(function(){element.removeAttribute('autoplay');});"
+            // An MSE element keeps its fetch loop alive after pause(). Dropping the source and
+            // re-loading is what actually closes the segment requests.
+            //
+            // Both spellings are needed: removeAttribute('src') only clears the attribute, while a
+            // player that assigned `video.src = URL.createObjectURL(mediaSource)` is the common case
+            // for MSE and is undone by nothing but a property write. Removing the attribute alone
+            // left `element.src` still reporting the blob URL on the real engine -- which is exactly
+            // the state in which the segment loop keeps running.
+            "safe(function(){"
+                "if(element.src&&element.src.indexOf('blob:')===0){"
+                    "element.removeAttribute('src');"
+                    "try{element.src='';}catch(error){}"
+                    "element.load();"
+                "}"
+            "});"
+            "return 1;"
+        "}"
+
+        "function stopWithinDocument(doc){"
+            "if(!doc){return 0;}"
+            "var stopped=0;"
+            "var media=null;"
+            "safe(function(){media=doc.querySelectorAll('video,audio');});"
+            "if(media){for(var i=0;i<media.length;i++){stopped+=stopElement(media[i]);}}"
+            "return stopped;"
+        "}"
+
+        "function stopEmbeddedPlayers(doc){"
+            "var frames=null;"
+            "safe(function(){frames=doc.querySelectorAll('iframe,frame');});"
+            "if(!frames){return;}"
+            "for(var i=0;i<frames.length;i++){"
+                "var frame=frames[i];"
+                "var src=safe(function(){return String(frame.src||'').toLowerCase();})||'';"
+                "if(!src){continue;}"
+                "var payload=null;"
+                "if(src.indexOf('youtube.com')!==-1||src.indexOf('youtube-nocookie.com')!==-1){"
+                    "payload=JSON.stringify({event:'command',func:'pauseVideo',args:''});"
+                "}else if(src.indexOf('vimeo.com')!==-1){"
+                    "payload=JSON.stringify({method:'pause'});"
+                "}else if(src.indexOf('bilibili.com')!==-1){"
+                    "payload=JSON.stringify({event:'command',func:'pause'});"
+                "}"
+                "if(!payload){continue;}"
+                "safe(function(){frame.contentWindow.postMessage(payload,'*');});"
+            "}"
+        "}"
+
+        "window.__browserPauseAtDepth=function(depth){"
+            "var stopped=stopWithinDocument(document);"
+            "stopEmbeddedPlayers(document);"
+            // Fan the same request down to children: same-origin frames are called directly so the
+            // result is synchronous and countable; cross-origin frames get the message.
+            "var frames=null;"
+            "safe(function(){frames=document.querySelectorAll('iframe,frame');});"
+            "if(frames){"
+                "for(var i=0;i<frames.length;i++){"
+                    "var frame=frames[i];"
+                    "var childDoc=safe(function(){return frame.contentDocument||null;});"
+                    "if(childDoc&&childDoc.defaultView&&"
+                        "typeof childDoc.defaultView.__browserPauseAtDepth==='function'){"
+                        "stopped+=Number(safe(function(){"
+                            "return childDoc.defaultView.__browserPauseAtDepth(depth+1);"
+                        "}))||0;"
+                    "}else{"
+                        "safe(function(){"
+                            "frame.contentWindow.postMessage({__browserPause:true,depth:depth+1},'*');"
+                        "});"
+                    "}"
+                "}"
+            "}"
+            "return stopped;"
+        "};"
+
+        "if(!window.__browserPauseMessageHooked){"
+            "window.__browserPauseMessageHooked=true;"
+            "window.addEventListener('message',function(event){"
+                "var data=event&&event.data;"
+                "if(!data||typeof data!=='object'||!data.__browserPause){return;}"
+                "var depth=Number(data.depth)||0;"
+                "if(depth>4){return;}"
+                "safe(function(){window.__browserPauseAtDepth(depth);});"
+            "},false);"
+        "}"
+    "})();";
+}
+
+/// The one-liner that runs the engine in the current frame and reports how much it stopped.
+static NSString *BrowserWebViewPauseEngineInvocation(NSInteger depth) {
+    return [NSString stringWithFormat:
+            @"(function(){"
+             "if(typeof window.__browserPauseAtDepth!=='function'){return -1;}"
+             "var stopped=0;"
+             "try{stopped=window.__browserPauseAtDepth(%ld);}catch(error){return -1;}"
+             "return stopped;"
+            "})()", (long)depth];
+}
+
+/// Installs the pause engine as a document-start user script so it is already live in every frame
+/// before any player library runs. Without this a frame opened *after* a pause request (an ad, a
+/// re-embedded player) would have no listener and the message would be dropped.
+static void BrowserInstallMediaPauseUserScript(id configuration) {
+    BrowserInstallUserScriptForMainFrame(configuration, BrowserWebViewPauseEngineScript(), NO);
 }
 
 static NSString *BrowserYouTubeRequestCaptureScript(void) {    return
@@ -1298,6 +1457,8 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
 @property (nullable, nonatomic, copy) NSString *lastTitle;
 @property (nonatomic, copy) NSString *userAgent;
 @property (nonatomic) BOOL loading;
+/// build-21: free-form label used only in pause/teardown logs so a line can be tied back to a tab.
+@property (nullable, nonatomic, copy) NSString *mediaPauseTag;
 
 @end
 
@@ -1363,6 +1524,9 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     }
     // Added first so it is the earliest script registered for document start.
     BrowserInstallObserverPolyfillUserScript(configuration);
+    // build-21: must be live in every frame before any player library, otherwise the pause message
+    // sent to a child frame that opens later is dropped on the floor.
+    BrowserInstallMediaPauseUserScript(configuration);
     BrowserConfigurePrivateMediaPreferences(configuration);
     BrowserConfigureMediaPlaybackPolicy(configuration);
     BrowserInstallFullscreenInterceptUserScript(configuration);
@@ -1470,11 +1634,26 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     }
 }
 
+/// build-21: render an HTML string in place. Used by the crash-log viewer so the log can be shown
+/// and selected as a normal page -- on a TV that is the only way to get text off the device.
+- (void)loadHTMLString:(NSString *)html baseURL:(NSURL *)baseURL {
+    if (html.length == 0 || self.runtimeWebView == nil) {
+        return;
+    }
+    SEL selector = NSSelectorFromString(@"loadHTMLString:baseURL:");
+    if (![self.runtimeWebView respondsToSelector:selector]) {
+        return;
+    }
+    BrowserRecordNavigationCheckpoint(@"about:blank (internal HTML)");
+    ((id (*)(id, SEL, id, id))objc_msgSend)(self.runtimeWebView, selector, html, baseURL);
+}
+
 - (void)reload {
     SEL selector = NSSelectorFromString(@"reload");
     if (self.runtimeWebView != nil && [self.runtimeWebView respondsToSelector:selector]) {
         ((void (*)(id, SEL))objc_msgSend)(self.runtimeWebView, selector);
     }
+
 }
 
 - (void)goBack {
@@ -1538,35 +1717,118 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
         }
     }
 
-    // JS fallback for page media elements and common iframe-based players.
-    NSString *pauseScript =
+    // build-21: JS fallback, now the primary path rather than the last resort.
+    //
+    // pauseAllMediaPlaybackWithCompletionHandler: is a WebKit-internal API and on tvOS it is not
+    // consistently reachable, so a tab whose player is driven by MediaSource (Youku / iQiyi /
+    // Bilibili all use MSE) kept buffering and kept audible after its tab was closed. Two things
+    // were wrong with the earlier fallback:
+    //
+    //   1. it only looked at the top frame, so a player inside an iframe (and every cross-origin
+    //      player is one) was never touched -- the YouTube/Vimeo postMessage branches only work for
+    //      those two and silently discard every other provider;
+    //   2. it did not release the MediaSource, so a segment-fetch loop (XHR / fetch on a .ts / .m4s
+    //      playlist) survived pause() and the tab stayed on the network.
+    //
+    // The script is now self-contained because it is also installed as a document-start user
+    // script: BrowserWebViewPauseEngineScript() defines __browserPauseAtDepth(depth), which is
+    // re-used both here (depth 0) and from every child frame (invoked by the parent for
+    // same-origin frames, by postMessage for cross-origin ones). Each frame answers with the number
+    // of media elements it paused, so the caller can log whether the pause actually reached a
+    // player instead of assuming it did.
+    NSString *result = [self stringByEvaluatingJavaScriptFromString:BrowserWebViewPauseEngineInvocation(0)];
+    // -1 means the engine was not installed in this page yet (a page loaded before this build, or a
+    // frame whose user script had not run). That is worth a log line: it is exactly the case where
+    // the old code silently left a player running.
+    NSLog(@"[MediaPause] tabId=%@ stopped=%@", self.mediaPauseTag ?: @"(nil)", result ?: @"(nil)");
+}
+
+/// build-21: full teardown used when a tab is being closed.
+///
+/// `pauseAllMediaPlayback` stops sound, but a closed tab still holds a live WKWebView, its content
+/// process, and any player heartbeat timer. A site whose player watches for a stalled buffer and
+/// calls play() again on its own schedule -- which is what Youku and iQiyi do -- will therefore
+/// come back to life a few seconds after the pause. Navigating the frame to an empty document
+/// after pausing removes the page (and its timers) entirely, so nothing is left to restart.
+///
+/// Order matters: pause first, then blank. Blanking first would destroy the page along with our
+/// engine, and the pause would then have nothing to act on.
+- (void)teardownMediaForTabClose {
+    if (self.runtimeWebView == nil) {
+        return;
+    }
+    [self pauseAllMediaPlayback];
+
+    SEL stopLoadingSelector = NSSelectorFromString(@"stopLoading");
+    if ([self.runtimeWebView respondsToSelector:stopLoadingSelector]) {
+        ((void (*)(id, SEL))objc_msgSend)(self.runtimeWebView, stopLoadingSelector);
+    }
+
+    // A literal about:blank URL and no headers: this is the frame's own document, not a network
+    // request, so it completes even while the device is offline or the site is throttling.
+    NSURL *blankURL = [NSURL URLWithString:@"about:blank"];
+    if (blankURL != nil) {
+        NSURLRequest *blankRequest = [NSURLRequest requestWithURL:blankURL];
+        SEL loadRequestSelector = NSSelectorFromString(@"loadRequest:");
+        if ([self.runtimeWebView respondsToSelector:loadRequestSelector]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(self.runtimeWebView, loadRequestSelector, blankRequest);
+            NSLog(@"[MediaPause] tabId=%@ teardown -> about:blank", self.mediaPauseTag ?: @"(nil)");
+        }
+    }
+}
+
+/// build-21: mute at the element level, not just via WebKit's own mute SPI.
+///
+/// Unmuting is the only way a paused-but-alive page can make noise again without a user gesture:
+/// every player library, on its own retry timer, calls play() and then sets muted = false.
+/// Pausing therefore is a race that the page wins by default. Setting `muted` on the media elements
+/// *and* remembering the intent in a window flag that a MutationObserver re-asserts means the media
+/// cannot be unmuted by the page itself; `setTabAudioMuted:NO` clears both.
+- (void)setTabAudioMuted:(BOOL)muted {
+    if (self.runtimeWebView == nil) {
+        return;
+    }
+
+    SEL setMutedSelector = NSSelectorFromString(@"setMuted:");
+    if ([self.runtimeWebView respondsToSelector:setMutedSelector]) {
+        ((void (*)(id, SEL, BOOL))objc_msgSend)(self.runtimeWebView, setMutedSelector, muted);
+    }
+
+    NSString *script = [NSString stringWithFormat:
         @"(function(){"
-            "function safe(fn){ try { fn(); } catch (error) {} }"
-            "var media = document.querySelectorAll('video,audio');"
-            "for (var i = 0; i < media.length; i++) {"
-                "var element = media[i];"
-                "safe(function(){ element.pause(); });"
-                "safe(function(){ element.autoplay = false; });"
-                "safe(function(){ element.removeAttribute('autoplay'); });"
-            "}"
-            "var iframePlayers = document.querySelectorAll('iframe');"
-            "for (var j = 0; j < iframePlayers.length; j++) {"
-                "var frame = iframePlayers[j];"
-                "var src = String(frame.src || '').toLowerCase();"
-                "if (!src) { continue; }"
-                "safe(function(){"
-                    "if (src.indexOf('youtube.com') !== -1 || src.indexOf('youtube-nocookie.com') !== -1) {"
-                        "frame.contentWindow.postMessage(JSON.stringify({event:'command',func:'pauseVideo',args:''}), '*');"
-                    "}"
-                "});"
-                "safe(function(){"
-                    "if (src.indexOf('vimeo.com') !== -1) {"
-                        "frame.contentWindow.postMessage(JSON.stringify({method:'pause'}), '*');"
-                    "}"
-                "});"
-            "}"
-        "})();";
-    [self stringByEvaluatingJavaScriptFromString:pauseScript];
+         "var wantMuted=%@;"
+         "window.__browserTabMuted=wantMuted;"
+         "function applyAll(){"
+             "var media=null;"
+             "try{media=document.querySelectorAll('video,audio');}catch(error){media=null;}"
+             "if(!media){return 0;}"
+             "for(var i=0;i<media.length;i++){"
+                 "try{media[i].muted=wantMuted;}catch(error){}"
+             "}"
+             "return media.length;"
+         "}"
+         "var count=applyAll();"
+         // A player that assigns media[i].muted=false later is re-muted on the next microtask batch.
+         "if(wantMuted&&!window.__browserTabMuteObserver&&typeof MutationObserver==='function'){"
+             "try{"
+                 "window.__browserTabMuteObserver=new MutationObserver(function(){"
+                     "if(!window.__browserTabMuted){return;}"
+                     "applyAll();"
+                 "});"
+                 "window.__browserTabMuteObserver.observe(document.documentElement,"
+                     "{childList:true,subtree:true,attributes:true,attributeFilter:['muted','src']});"
+             "}catch(error){}"
+         "}"
+         "if(!wantMuted&&window.__browserTabMuteObserver){"
+             "try{window.__browserTabMuteObserver.disconnect();}catch(error){}"
+             "window.__browserTabMuteObserver=null;"
+         "}"
+         "return count;"
+        "})()",
+        muted ? @"true" : @"false"];
+    NSString *result = [self stringByEvaluatingJavaScriptFromString:script];
+    NSLog(@"[MediaPause] tabId=%@ muted=%@ elements=%@", self.mediaPauseTag ?: @"(nil)",
+          muted ? @"YES" : @"NO", result ?: @"(nil)");
 }
 
 - (NSString *)runtimeMediaPreferenceReport {
