@@ -22,6 +22,9 @@ NS_ASSUME_NONNULL_BEGIN
 // A learning remote's dedicated Play key arrives as a PlayPause press. Returns YES when a
 // video was found, so the input controller treats the press as playback instead of the URL sheet.
 - (BOOL)browserRemoteInputControllerHandleRemotePlayRequest;
+// Select outside fullscreen: returns YES when the cursor sits on a video and playback was toggled,
+// so the press is consumed instead of also clicking the page underneath.
+- (BOOL)browserRemoteInputControllerTogglePlaybackAtCursorPoint;
 - (void)browserRemoteInputControllerHandlePseudoFullscreenPress;
 - (void)browserRemoteInputControllerHandleFavoritesPress;
 - (BOOL)browserRemoteInputControllerPseudoFullscreenActive;
