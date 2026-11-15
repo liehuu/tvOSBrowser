@@ -68,8 +68,27 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     }
 }
 
-static UIViewController *BrowserFindViewControllerOfClass(UIViewController *viewController, Class targetClass) {
-    if (viewController == nil || targetClass == Nil) {
+// build-22 crash fix. The log the user captured showed:
+//   exception: NSInvalidArgumentException
+//   reason: -[ViewController (null selector)]: unrecognized selector sent to instance 0x80f019800
+//   ... -[UIApplication(BrowserSelectPressForwarding) browser_sendEvent:] + 2276
+// i.e. a message with a NULL selector reached an object UIKit still called a ViewController. That
+// shape comes from walking the presented/child view-controller graph while UIKit is tearing it
+// down: the crashed run was "in a player page, went back to the site home page", so an alert or the
+// native player was being dismissed exactly as the next press arrived. Two things make that walk
+// unsafe and both are fixed here:
+//   1. depth was unbounded -- a presented/child cycle (or a very deep hierarchy) recursed until the
+//      stack or an object gave out;
+//   2. every hop re-read four properties off a controller that may already be deallocating.
+// A depth cap plus nil/target checks turns "walk until something breaks" into "give up and report
+// no player", which is the correct answer anyway: if the graph is mid-teardown there is no player
+// to hand arrow presses to.
+static NSUInteger const kBrowserViewControllerSearchMaxDepth = 16;
+
+static UIViewController *BrowserFindViewControllerOfClassAtDepth(UIViewController *viewController,
+                                                                Class targetClass,
+                                                                NSUInteger depth) {
+    if (viewController == nil || targetClass == Nil || depth > kBrowserViewControllerSearchMaxDepth) {
         return nil;
     }
 
@@ -77,15 +96,23 @@ static UIViewController *BrowserFindViewControllerOfClass(UIViewController *view
         return viewController;
     }
 
-    if (viewController.presentedViewController != nil) {
-        UIViewController *match = BrowserFindViewControllerOfClass(viewController.presentedViewController, targetClass);
+    // Take the child list once, on a controller already proven to be alive by the isKindOfClass:
+    // message above, and never re-read a property that a later hop could have invalidated.
+    NSArray<UIViewController *> *children = viewController.childViewControllers;
+    UIViewController *presented = viewController.presentedViewController;
+
+    if (presented != nil && presented != viewController) {
+        UIViewController *match = BrowserFindViewControllerOfClassAtDepth(presented, targetClass, depth + 1);
         if (match != nil) {
             return match;
         }
     }
 
-    for (UIViewController *childViewController in viewController.childViewControllers) {
-        UIViewController *match = BrowserFindViewControllerOfClass(childViewController, targetClass);
+    for (UIViewController *childViewController in children) {
+        if (childViewController == nil || childViewController == viewController) {
+            continue;
+        }
+        UIViewController *match = BrowserFindViewControllerOfClassAtDepth(childViewController, targetClass, depth + 1);
         if (match != nil) {
             return match;
         }
@@ -93,7 +120,9 @@ static UIViewController *BrowserFindViewControllerOfClass(UIViewController *view
 
     if ([viewController isKindOfClass:[UINavigationController class]]) {
         UINavigationController *navigationController = (UINavigationController *)viewController;
-        UIViewController *match = BrowserFindViewControllerOfClass(navigationController.visibleViewController, targetClass);
+        UIViewController *match = BrowserFindViewControllerOfClassAtDepth(navigationController.visibleViewController,
+                                                                         targetClass,
+                                                                         depth + 1);
         if (match != nil) {
             return match;
         }
@@ -101,7 +130,9 @@ static UIViewController *BrowserFindViewControllerOfClass(UIViewController *view
 
     if ([viewController isKindOfClass:[UITabBarController class]]) {
         UITabBarController *tabBarController = (UITabBarController *)viewController;
-        UIViewController *match = BrowserFindViewControllerOfClass(tabBarController.selectedViewController, targetClass);
+        UIViewController *match = BrowserFindViewControllerOfClassAtDepth(tabBarController.selectedViewController,
+                                                                         targetClass,
+                                                                         depth + 1);
         if (match != nil) {
             return match;
         }
@@ -110,13 +141,45 @@ static UIViewController *BrowserFindViewControllerOfClass(UIViewController *view
     return nil;
 }
 
+static UIViewController *BrowserFindViewControllerOfClass(UIViewController *viewController, Class targetClass) {
+    return BrowserFindViewControllerOfClassAtDepth(viewController, targetClass, 0);
+}
+
 static UIViewController *BrowserFindPresentedNativeVideoPlayerViewController(UIApplication *application, Class nativeVideoPlayerClass) {
-    for (UIWindow *window in application.windows) {
-        if (window.hidden || window.rootViewController == nil) {
+    if (application == nil || nativeVideoPlayerClass == Nil) {
+        return nil;
+    }
+    // connectedScenes is the supported route on tvOS 13+; `windows` still works but can include
+    // windows from a scene that is being disconnected, which is one more way to touch a dying
+    // controller. Collect root controllers first so the walk below starts from stable anchors.
+    NSMutableArray<UIViewController *> *roots = [NSMutableArray array];
+    for (UIScene *scene in application.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
             continue;
         }
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        if (windowScene.activationState == UISceneActivationStateUnattached) {
+            continue;
+        }
+        for (UIWindow *window in windowScene.windows) {
+            if (window.hidden || window.rootViewController == nil) {
+                continue;
+            }
+            [roots addObject:window.rootViewController];
+        }
+    }
+    if (roots.count == 0) {
+        // Fall back for older tvOS builds where connectedScenes is empty at this point.
+        for (UIWindow *window in application.windows) {
+            if (window.hidden || window.rootViewController == nil) {
+                continue;
+            }
+            [roots addObject:window.rootViewController];
+        }
+    }
 
-        UIViewController *match = BrowserFindViewControllerOfClass(window.rootViewController, nativeVideoPlayerClass);
+    for (UIViewController *root in roots) {
+        UIViewController *match = BrowserFindViewControllerOfClass(root, nativeVideoPlayerClass);
         if (match != nil) {
             return match;
         }
@@ -422,21 +485,33 @@ static void BrowserLongPressEndTracking(UIPressType type) {
         }
     }
 
-    [self browser_sendEvent:event];
-
+    // build-22: snapshot the Select-ended flags BEFORE forwarding. The old order ran
+    // [self browser_sendEvent:event] first and then walked `presses` again -- but `presses` is the
+    // event's own live set, and forwarding is what lets UIKit consume the event, dismiss a
+    // controller, and (possibly) release it. Reading it afterwards is a use-after-free of precisely
+    // the kind the crash log shows. Deciding before forwarding costs nothing: the decision only
+    // depends on the press types in this event.
+    BOOL shouldPostSelectEndedNotification = NO;
     for (UIPress *press in presses) {
         if (press.type == UIPressTypeSelect && press.phase == UIPressPhaseEnded) {
             if (sBrowserSelectLongPressFired) {
+                // Clear the flag at decision time so a duplicated End cannot suppress twice.
                 sBrowserSelectLongPressFired = NO;
                 NSLog(@"[InputTrace][App] suppress Select-ended notification after hold");
-                break;
+            } else {
+                NSLog(@"[InputTrace][App] post BrowserGlobalSelectPressEndedNotification");
+                shouldPostSelectEndedNotification = YES;
             }
-            NSLog(@"[InputTrace][App] post BrowserGlobalSelectPressEndedNotification");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter] postNotificationName:BrowserGlobalSelectPressEndedNotification object:nil];
-            });
             break;
         }
+    }
+
+    [self browser_sendEvent:event];
+
+    if (shouldPostSelectEndedNotification) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[NSNotificationCenter defaultCenter] postNotificationName:BrowserGlobalSelectPressEndedNotification object:nil];
+        });
     }
 }
 
