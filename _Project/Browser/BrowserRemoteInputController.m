@@ -126,9 +126,11 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     scrollView.scrollEnabled = shouldAllowWebInteraction;
     self.manualScrollPanRecognizer.enabled = shouldAllowWebInteraction;
     [self.host browserRemoteInputControllerSetWebInteractionEnabled:shouldAllowWebInteraction];
+    // Fullscreen playback has no pointer: the arrow must disappear while the video is promoted.
     self.cursorView.hidden = !self.cursorModeEnabled ||
         [self.host browserRemoteInputControllerTabOverviewVisible] ||
-        topBarFocusActive;
+        topBarFocusActive ||
+        [self.host browserRemoteInputControllerPseudoFullscreenActive];
 }
 
 - (BOOL)applyManualScrollDelta:(CGPoint)delta {
@@ -360,10 +362,12 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 // A tap must land on small targets, so the single-tap step is fine (was 48 pt on a 1920-wide
 // screen: only 40 positions across, which made many links unreachable). Holding still has to cover
 // the screen quickly, so the repeat step ramps up instead of the tap step being coarse.
-static CGFloat const kBrowserCursorArrowStep = 16.0;
-static CGFloat const kBrowserCursorArrowStepRamp[4] = {16.0, 28.0, 44.0, 64.0};
-static NSInteger const kBrowserCursorArrowRampThresholds[3] = {10, 26, 48};
-static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.075;
+// Single-tap precision matters more than raw travel: 8 pt gives 240 landing positions across a
+// 1920-wide screen. Holding still has to cover the screen, so the repeat step ramps up instead.
+static CGFloat const kBrowserCursorArrowStep = 8.0;
+static CGFloat const kBrowserCursorArrowStepRamp[4] = {8.0, 16.0, 28.0, 48.0};
+static NSInteger const kBrowserCursorArrowRampThresholds[3] = {12, 32, 60};
+static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.085;
 static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
 
 - (BOOL)isArrowPressType:(UIPressType)type {
@@ -792,6 +796,15 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
         if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
             NSLog(@"[InputTrace][Root] fullscreen PlayPause -> toggle playback");
             [self.host browserRemoteInputControllerTogglePlaybackPlayState];
+            return YES;
+        }
+        // A learning remote's dedicated Play key sends this same press type. WebKit lets pause()
+        // through but rejects play() without a user activation, so native code drives the resume in
+        // every frame. Resume is a no-op while a video is already playing, which leaves the Pause
+        // key's existing behaviour untouched. The event flow stays exactly as before (swallowed).
+        BOOL hasVideo = [self.host browserRemoteInputControllerHandleRemotePlayRequest];
+        NSLog(@"[InputTrace][Root] PlayPause -> resume playback hasVideo=%@", hasVideo ? @"YES" : @"NO");
+        if (hasVideo) {
             return YES;
         }
         [self.host browserRemoteInputControllerHandlePlayPausePress];
