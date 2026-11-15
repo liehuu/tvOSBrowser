@@ -24,6 +24,10 @@ static NSString * const kBrowserGlobalSelectPressEndedNotification = @"BrowserGl
 static NSString * const kBrowserGlobalArrowPressNotification = @"BrowserGlobalArrowPressNotification";
 static NSString * const kBrowserGlobalArrowPressTypeKey = @"type";
 static NSString * const kBrowserGlobalArrowPressBeganKey = @"began";
+static NSString * const kBrowserGlobalLongPressNotification = @"BrowserGlobalLongPressNotification";
+static NSString * const kBrowserGlobalLongPressTypeKey = @"type";
+static NSString * const kBrowserGlobalLongPressSourceKey = @"source";
+static NSString * const kBrowserGlobalLongPressSourceAuxKey = @"aux";
 
 static UIColor *kTextColor(void) {
     if (@available(tvOS 13, *)) {
@@ -53,6 +57,16 @@ static UIColor *kTextColor(void) {
 @property (nonatomic) BOOL pseudoFullscreenCursorModeWasEnabled;
 @property (nonatomic) BOOL pseudoFullscreenTopBarWasVisible;
 @property (nonatomic, copy) NSString *pseudoFullscreenURLString;
+@property (nonatomic) UIView *playbackHUDContainer;
+@property (nonatomic) UILabel *playbackTimeLabel;
+@property (nonatomic) UILabel *playbackActionLabel;
+@property (nonatomic) UIView *playbackProgressTrack;
+@property (nonatomic) UIView *playbackProgressFill;
+@property (nonatomic) NSTimer *playbackHUDTimer;
+@property (nonatomic) CGFloat playbackProgressRatio;
+@property (nonatomic) NSTimer *playbackSeekRepeatTimer;
+@property (nonatomic) CGFloat playbackSeekRepeatDelta;
+@property (nonatomic) NSLayoutConstraint *playbackProgressWidthConstraint;
 
 @end
 
@@ -131,6 +145,10 @@ static UIColor *kTextColor(void) {
                                              selector:@selector(handleGlobalArrowPressNotification:)
                                                  name:kBrowserGlobalArrowPressNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleGlobalLongPressNotification:)
+                                                 name:kBrowserGlobalLongPressNotification
+                                               object:nil];
 
     [self.tabCoordinator restoreInitialStateOrCreateFirstTab];
 }
@@ -183,6 +201,48 @@ static UIColor *kTextColor(void) {
     UIPressType type = (UIPressType)[typeValue integerValue];
     BOOL began = [beganValue isKindOfClass:[NSNumber class]] ? [beganValue boolValue] : NO;
     [self.remoteInputController handleGlobalArrowPressType:type began:began];
+}
+
+// Long press arrives from the UIApplication sendEvent: bridge, which is the only channel that
+// actually sees Menu/PlayPause under GCEventViewController.
+- (void)handleGlobalLongPressNotification:(NSNotification *)notification {
+    id typeValue = notification.userInfo[kBrowserGlobalLongPressTypeKey];
+    if (![typeValue isKindOfClass:[NSNumber class]]) {
+        return;
+    }
+    UIPressType type = (UIPressType)[typeValue integerValue];
+    id sourceValue = notification.userInfo[kBrowserGlobalLongPressSourceKey];
+    BOOL isAuxKey = [sourceValue isKindOfClass:[NSString class]] &&
+                    [sourceValue isEqualToString:kBrowserGlobalLongPressSourceAuxKey];
+
+    if (self.tabOverviewController.visible || self.topBarFocusActive) {
+        NSLog(@"[LongPress] ignored type=%ld (overlay active)", (long)type);
+        return;
+    }
+
+    UIViewController *presented = self.presentedViewController;
+    if (presented != nil) {
+        NSLog(@"[LongPress] ignored type=%ld (presented=%@)", (long)type, NSStringFromClass([presented class]));
+        return;
+    }
+
+    if (type == UIPressTypePlayPause && !isAuxKey) {
+        NSLog(@"[LongPress] PlayPause -> toggle pseudo fullscreen");
+        [self.remoteInputController handleGlobalLongPressType:type];
+        return;
+    }
+
+    if (type == UIPressTypeMenu && isAuxKey) {
+        // An aux key must not arm the Menu suppression flag, so call the host directly.
+        NSLog(@"[LongPress] aux key -> favorites");
+        [self.menuCoordinator showFavoritesMenu];
+        return;
+    }
+
+    if (type == UIPressTypeMenu) {
+        NSLog(@"[LongPress] Menu -> favorites");
+        [self.remoteInputController handleGlobalLongPressType:type];
+    }
 }
 
 #pragma mark - Helpers
@@ -414,7 +474,7 @@ static UIColor *kTextColor(void) {
 
 - (void)showHintsAlert {
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor step by step (hold to keep moving).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the Menu button to open Favorites (bookmarks).\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nDouble tap the Play/Pause to show the Advanced Menu with more options.\nLong press the Play/Pause button to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nUse the tabs icon in the top bar to open the tab overview."
+                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor step by step (hold to keep moving).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the Menu button to open Favorites (bookmarks). A remote's Stop button also opens it.\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nDouble tap the Play/Pause to show the Advanced Menu with more options.\nLong press the Play/Pause button to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nIn fullscreen: Left/Right seek back/forward 10s (hold to keep seeking), Up or Down shows/hides the timecode bar, Play/Pause plays or pauses, Select shows the timecode bar, Menu leaves fullscreen.\nUse the tabs icon in the top bar to open the tab overview."
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;
@@ -725,6 +785,30 @@ static UIColor *kTextColor(void) {
     [self.menuCoordinator showFavoritesMenu];
 }
 
+- (BOOL)browserRemoteInputControllerPseudoFullscreenActive {
+    return self.pseudoFullscreenActive;
+}
+
+// Fullscreen only: Left/Right seek instead of moving the cursor, and the HUD reports the result.
+- (void)browserRemoteInputControllerSeekBySeconds:(double)delta began:(BOOL)began {
+    if (!self.pseudoFullscreenActive) {
+        return;
+    }
+    if (began) {
+        [self beginPlaybackSeekRepeatWithDelta:delta];
+    } else {
+        [self cancelPlaybackSeekRepeat];
+    }
+}
+
+- (void)browserRemoteInputControllerTogglePlaybackHUD {
+    [self togglePlaybackHUD];
+}
+
+- (void)browserRemoteInputControllerTogglePlaybackPlayState {
+    [self togglePlaybackPlayState];
+}
+
 - (void)handlePseudoFullscreenRequestNotification:(NSNotification *)notification {
     BOOL enter = YES;
     id value = notification.userInfo[BrowserPseudoFullscreenRequestEnterKey];
@@ -827,6 +911,9 @@ static UIColor *kTextColor(void) {
     if (self.viewModel.topNavigationBarVisible) {
         [self browserHideTopNav];
     }
+
+    // Reveal the timecode/progress HUD so the duration and position are visible right away.
+    [self startPlaybackHUDSession];
 }
 
 // Enter requested by the page itself (its own fullscreen button). The page called
@@ -848,6 +935,7 @@ static UIColor *kTextColor(void) {
     }
 
     self.pseudoFullscreenActive = NO;
+    [self stopPlaybackHUDSession];
 
     // Restore the cursor mode the user had before going fullscreen.
     if (!self.pseudoFullscreenCursorModeWasEnabled && self.remoteInputController.cursorModeEnabled) {
@@ -860,6 +948,366 @@ static UIColor *kTextColor(void) {
     }
     self.pseudoFullscreenTopBarWasVisible = NO;
     self.pseudoFullscreenURLString = nil;
+}
+
+#pragma mark - Playback HUD (elapsed / duration / progress + seek feedback)
+
+static NSString *BrowserFormatTimecode(double seconds) {
+    if (!isfinite(seconds) || seconds < 0) {
+        return @"--:--";
+    }
+    NSInteger total = (NSInteger)lround(seconds);
+    NSInteger hours = total / 3600;
+    NSInteger minutes = (total % 3600) / 60;
+    NSInteger secs = total % 60;
+    if (hours > 0) {
+        return [NSString stringWithFormat:@"%ld:%02ld:%02ld", (long)hours, (long)minutes, (long)secs];
+    }
+    return [NSString stringWithFormat:@"%02ld:%02ld", (long)minutes, (long)secs];
+}
+
+- (void)buildPlaybackHUDIfNeeded {
+    if (self.playbackHUDContainer != nil) {
+        return;
+    }
+
+    UIView *container = [[UIView alloc] initWithFrame:CGRectZero];
+    container.translatesAutoresizingMaskIntoConstraints = NO;
+    container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.62];
+    container.layer.cornerRadius = 18.0;
+    container.hidden = YES;
+    container.userInteractionEnabled = NO;
+
+    UILabel *timeLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    timeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    timeLabel.font = [UIFont monospacedDigitSystemFontOfSize:38.0 weight:UIFontWeightMedium];
+    timeLabel.textColor = [UIColor whiteColor];
+    timeLabel.textAlignment = NSTextAlignmentCenter;
+    timeLabel.text = @"--:-- / --:--";
+
+    UIView *track = [[UIView alloc] initWithFrame:CGRectZero];
+    track.translatesAutoresizingMaskIntoConstraints = NO;
+    track.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.28];
+    track.layer.cornerRadius = 4.0;
+    track.clipsToBounds = YES;
+
+    UIView *fill = [[UIView alloc] initWithFrame:CGRectZero];
+    fill.translatesAutoresizingMaskIntoConstraints = NO;
+    fill.backgroundColor = [UIColor whiteColor];
+    fill.layer.cornerRadius = 4.0;
+    [track addSubview:fill];
+
+    UILabel *actionLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    actionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    actionLabel.font = [UIFont systemFontOfSize:26.0 weight:UIFontWeightSemibold];
+    actionLabel.textColor = [UIColor whiteColor];
+    actionLabel.textAlignment = NSTextAlignmentCenter;
+    actionLabel.text = @"";
+
+    [container addSubview:timeLabel];
+    [container addSubview:track];
+    [container addSubview:actionLabel];
+    [self.view addSubview:container];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [container.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [container.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:48.0],
+        [container.widthAnchor constraintEqualToConstant:620.0],
+
+        [timeLabel.topAnchor constraintEqualToAnchor:container.topAnchor constant:18.0],
+        [timeLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24.0],
+        [timeLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-24.0],
+
+        [track.topAnchor constraintEqualToAnchor:timeLabel.bottomAnchor constant:14.0],
+        [track.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24.0],
+        [track.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-24.0],
+        [track.heightAnchor constraintEqualToConstant:8.0],
+
+        [fill.leadingAnchor constraintEqualToAnchor:track.leadingAnchor],
+        [fill.topAnchor constraintEqualToAnchor:track.topAnchor],
+        [fill.bottomAnchor constraintEqualToAnchor:track.bottomAnchor],
+
+        [actionLabel.topAnchor constraintEqualToAnchor:track.bottomAnchor constant:12.0],
+        [actionLabel.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:24.0],
+        [actionLabel.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-24.0],
+        [actionLabel.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-16.0],
+    ]];
+
+    // Kept as a strong property so the multiplier can be swapped on every progress update.
+    self.playbackProgressWidthConstraint =
+        [fill.widthAnchor constraintEqualToAnchor:track.widthAnchor multiplier:0.0001];
+    self.playbackProgressWidthConstraint.active = YES;
+
+    self.playbackHUDContainer = container;
+    self.playbackTimeLabel = timeLabel;
+    self.playbackProgressTrack = track;
+    self.playbackProgressFill = fill;
+    self.playbackActionLabel = actionLabel;
+    self.playbackProgressRatio = 0.0;
+
+    // Keep the cursor above the HUD so it never swallows the pointer.
+    if (self.remoteInputController.cursorView.superview == self.view) {
+        [self.view bringSubviewToFront:self.remoteInputController.cursorView];
+    }
+}
+
+// Reads "<current>|<duration>|<paused>" from the frame engine, merging iframe answers.
+- (NSString *)queryPlaybackState {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return @"none";
+    }
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:
+        @"(function(){"
+        "if(typeof window.__browserPfCollectState==='function'){try{return window.__browserPfCollectState();}catch(e){}}"
+        "if(typeof window.__browserPfState==='function'){try{return window.__browserPfState();}catch(e){}}"
+        "return 'none';"
+        "})()"];
+    return result.length > 0 ? result : @"none";
+}
+
+- (void)updatePlaybackHUDWithState:(NSString *)state {
+    [self buildPlaybackHUDIfNeeded];
+
+    double current = 0.0;
+    double duration = 0.0;
+    BOOL paused = YES;
+    BOOL hasState = NO;
+
+    if ([state isKindOfClass:[NSString class]] &&
+        ![state isEqualToString:@"none"] &&
+        [state containsString:@"|"]) {
+        NSArray<NSString *> *parts = [state componentsSeparatedByString:@"|"];
+        if (parts.count >= 3) {
+            current = [parts[0] doubleValue];
+            duration = [parts[1] doubleValue];
+            paused = ([parts[2] integerValue] != 0);
+            hasState = (duration > 0.0);
+        }
+    }
+
+    if (hasState) {
+        self.playbackTimeLabel.text = [NSString stringWithFormat:@"%@ / %@",
+                                       BrowserFormatTimecode(current),
+                                       BrowserFormatTimecode(duration)];
+        double ratio = current / duration;
+        if (!isfinite(ratio)) {
+            ratio = 0.0;
+        }
+        self.playbackProgressRatio = MIN(MAX(ratio, 0.0), 1.0);
+    } else {
+        self.playbackTimeLabel.text = @"--:-- / --:--";
+        self.playbackProgressRatio = 0.0;
+    }
+
+    [self applyPlaybackProgressRatio];
+}
+
+- (void)applyPlaybackProgressRatio {
+    NSLayoutConstraint *widthConstraint = self.playbackProgressWidthConstraint;
+    UIView *track = self.playbackProgressTrack;
+    UIView *fill = self.playbackProgressFill;
+    if (widthConstraint == nil || track == nil || fill == nil) {
+        return;
+    }
+    CGFloat ratio = MIN(MAX(self.playbackProgressRatio, 0.0), 1.0);
+    widthConstraint.active = NO;
+
+    // Auto Layout multipliers are immutable, so swap in a fresh constraint for the new ratio.
+    NSLayoutConstraint *replacement =
+        [fill.widthAnchor constraintEqualToAnchor:track.widthAnchor multiplier:MAX(ratio, 0.0001)];
+    replacement.active = YES;
+    self.playbackProgressWidthConstraint = replacement;
+}
+
+- (void)showPlaybackHUD {
+    if (!self.pseudoFullscreenActive) {
+        return;
+    }
+    [self buildPlaybackHUDIfNeeded];
+    [self updatePlaybackHUDWithState:[self queryPlaybackState]];
+    self.playbackHUDContainer.hidden = NO;
+    [self.view bringSubviewToFront:self.playbackHUDContainer];
+    if (self.remoteInputController.cursorView.superview == self.view) {
+        [self.view bringSubviewToFront:self.remoteInputController.cursorView];
+    }
+    [self schedulePlaybackHUDAutoHide];
+}
+
+// The HUD must not sit on top of the video forever: hide it 4 s after the last interaction.
+- (void)schedulePlaybackHUDAutoHide {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(autoHidePlaybackHUD)
+                                               object:nil];
+    [self performSelector:@selector(autoHidePlaybackHUD) withObject:nil afterDelay:4.0];
+}
+
+- (void)autoHidePlaybackHUD {
+    if (!self.pseudoFullscreenActive) {
+        return;
+    }
+    if (self.playbackSeekRepeatTimer != nil) {
+        [self schedulePlaybackHUDAutoHide];
+        return;
+    }
+    [self hidePlaybackHUD];
+}
+
+- (void)hidePlaybackHUD {
+    self.playbackHUDContainer.hidden = YES;
+    self.playbackActionLabel.text = @"";
+}
+
+- (void)startPlaybackHUDSession {
+    [self buildPlaybackHUDIfNeeded];
+    [self showPlaybackHUD];
+    [self startPlaybackHUDRefreshTimer];
+}
+
+// Polls the page for the current position while the HUD is on screen.
+- (void)startPlaybackHUDRefreshTimer {
+    [self.playbackHUDTimer invalidate];
+    __weak typeof(self) weakSelf = self;
+    self.playbackHUDTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                            repeats:YES
+                                                              block:^(NSTimer *timer) {
+        (void)timer;
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (!strongSelf.pseudoFullscreenActive) {
+            [strongSelf stopPlaybackHUDSession];
+            return;
+        }
+        if (strongSelf.playbackHUDContainer.hidden) {
+            return;
+        }
+        [strongSelf updatePlaybackHUDWithState:[strongSelf queryPlaybackState]];
+    }];
+}
+
+- (void)stopPlaybackHUDSession {
+    [NSObject cancelPreviousPerformRequestsWithTarget:self
+                                             selector:@selector(autoHidePlaybackHUD)
+                                               object:nil];
+    [self.playbackHUDTimer invalidate];
+    self.playbackHUDTimer = nil;
+    [self.playbackSeekRepeatTimer invalidate];
+    self.playbackSeekRepeatTimer = nil;
+    self.playbackSeekRepeatDelta = 0.0;
+    [self hidePlaybackHUD];
+}
+
+- (void)togglePlaybackHUD {
+    if (!self.pseudoFullscreenActive) {
+        return;
+    }
+    if (self.playbackHUDContainer == nil || self.playbackHUDContainer.hidden) {
+        [self showPlaybackHUD];
+        if (self.playbackHUDTimer == nil) {
+            [self startPlaybackHUDRefreshTimer];
+        }
+    } else {
+        [self hidePlaybackHUD];
+    }
+}
+
+// Seek by delta seconds through the frame engine (postMessage fan-out reaches cross-origin players).
+- (NSString *)seekPlaybackBySeconds:(double)delta {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return @"no-webview";
+    }
+    NSString *script = [NSString stringWithFormat:
+        @"(function(){"
+        "var d=%.2f;"
+        "var said='none';"
+        "if(typeof window.__browserPfSeek==='function'){try{said=window.__browserPfSeek(d);}catch(e){}}"
+        "if(typeof window.__browserPfFanOutMessage==='function'){"
+            "try{window.__browserPfFanOutMessage({__browserPf:'seek',delta:d});}catch(e){}"
+        "}"
+        "return said;"
+        "})()", delta];
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:script];
+    NSLog(@"[PlaybackHUD] seek delta=%.1f result=%@", delta, result ?: @"(nil)");
+    return result ?: @"";
+}
+
+- (void)seekPlaybackBySeconds:(double)delta showFeedback:(BOOL)showFeedback {
+    NSString *result = [self seekPlaybackBySeconds:delta];
+    if (showFeedback) {
+        [self buildPlaybackHUDIfNeeded];
+        self.playbackActionLabel.text = (delta >= 0)
+            ? [NSString stringWithFormat:@"⏩ +%.0fs", delta]
+            : [NSString stringWithFormat:@"⏪ %.0fs", delta];
+        self.playbackHUDContainer.hidden = NO;
+        [self.view bringSubviewToFront:self.playbackHUDContainer];
+        if (self.remoteInputController.cursorView.superview == self.view) {
+            [self.view bringSubviewToFront:self.remoteInputController.cursorView];
+        }
+        [self schedulePlaybackHUDAutoHide];
+    }
+    // Refresh right away, then let the poll pick up the settled position.
+    [self updatePlaybackHUDWithState:[self queryPlaybackState]];
+    (void)result;
+}
+
+- (void)beginPlaybackSeekRepeatWithDelta:(double)delta {
+    [self cancelPlaybackSeekRepeat];
+    self.playbackSeekRepeatDelta = delta;
+    [self seekPlaybackBySeconds:delta showFeedback:YES];
+
+    __weak typeof(self) weakSelf = self;
+    self.playbackSeekRepeatTimer = [NSTimer scheduledTimerWithTimeInterval:0.45
+                                                                  repeats:YES
+                                                                    block:^(NSTimer *timer) {
+        (void)timer;
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (!strongSelf.pseudoFullscreenActive || strongSelf.playbackSeekRepeatDelta == 0.0) {
+            [strongSelf cancelPlaybackSeekRepeat];
+            return;
+        }
+        [strongSelf seekPlaybackBySeconds:strongSelf.playbackSeekRepeatDelta showFeedback:YES];
+    }];
+}
+
+- (void)cancelPlaybackSeekRepeat {
+    BOOL hadTimer = (self.playbackSeekRepeatTimer != nil);
+    [self.playbackSeekRepeatTimer invalidate];
+    self.playbackSeekRepeatTimer = nil;
+    self.playbackSeekRepeatDelta = 0.0;
+    if (hadTimer) {
+        self.playbackActionLabel.text = @"";
+    }
+}
+
+- (void)togglePlaybackPlayState {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return;
+    }
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:
+        @"(function(){"
+        "var said='none';"
+        "if(typeof window.__browserPfTogglePlay==='function'){try{said=window.__browserPfTogglePlay();}catch(e){}}"
+        "if(typeof window.__browserPfFanOutMessage==='function'){"
+            "try{window.__browserPfFanOutMessage({__browserPf:'toggle'});}catch(e){}"
+        "}"
+        "return said;"
+        "})()"];
+    NSLog(@"[PlaybackHUD] toggle result=%@", result ?: @"(nil)");
+    [self buildPlaybackHUDIfNeeded];
+    self.playbackActionLabel.text = [result isEqualToString:@"playing"] ? @"▶︎ Play" :
+                                    ([result isEqualToString:@"paused"] ? @"⏸ Pause" : @"");
+    self.playbackHUDContainer.hidden = NO;
+    if (self.remoteInputController.cursorView.superview == self.view) {
+        [self.view bringSubviewToFront:self.remoteInputController.cursorView];
+    }
+    [self updatePlaybackHUDWithState:[self queryPlaybackState]];
 }
 
 - (NSString *)browserRemoteInputControllerHoverStateAtCursorPoint:(CGPoint)point {
@@ -910,6 +1358,7 @@ static UIColor *kTextColor(void) {
             NSLog(@"[PseudoFullscreen] document changed (%@), leaving pseudo fullscreen",
                   currentURLString ?: @"(nil)");
             self.pseudoFullscreenActive = NO;
+            [self stopPlaybackHUDSession];
             BOOL shouldRestoreTopBar = self.pseudoFullscreenTopBarWasVisible && !self.viewModel.topNavigationBarVisible;
             self.pseudoFullscreenTopBarWasVisible = NO;
             self.pseudoFullscreenURLString = nil;
