@@ -201,15 +201,15 @@ static UIImage *BrowserStarFallbackImage(CGFloat side) {
         [self.chromeEffectView.contentView addSubview:imageView];
     }
 
-    _backFocusButton = [self newFocusButtonForAction:BrowserTopBarActionBack accessibilityLabel:@"Back"];
-    _refreshFocusButton = [self newFocusButtonForAction:BrowserTopBarActionRefresh accessibilityLabel:@"Reload"];
-    _forwardFocusButton = [self newFocusButtonForAction:BrowserTopBarActionForward accessibilityLabel:@"Forward"];
-    _homeFocusButton = [self newFocusButtonForAction:BrowserTopBarActionHome accessibilityLabel:@"Home"];
-    _tabsFocusButton = [self newFocusButtonForAction:BrowserTopBarActionTabs accessibilityLabel:@"Tabs"];
-    _URLFocusButton = [self newFocusButtonForAction:BrowserTopBarActionURL accessibilityLabel:@"Enter URL or Search"];
-    _favoritesFocusButton = [self newFocusButtonForAction:BrowserTopBarActionFavorites accessibilityLabel:@"Favorites"];
-    _fullscreenFocusButton = [self newFocusButtonForAction:BrowserTopBarActionFullscreen accessibilityLabel:@"Top Navigation Visibility"];
-    _menuFocusButton = [self newFocusButtonForAction:BrowserTopBarActionMenu accessibilityLabel:@"Menu"];
+    _backFocusButton = [self newFocusButtonForAction:BrowserTopBarActionBack accessibilityLabel:@"返回"];
+    _refreshFocusButton = [self newFocusButtonForAction:BrowserTopBarActionRefresh accessibilityLabel:@"刷新"];
+    _forwardFocusButton = [self newFocusButtonForAction:BrowserTopBarActionForward accessibilityLabel:@"前进"];
+    _homeFocusButton = [self newFocusButtonForAction:BrowserTopBarActionHome accessibilityLabel:@"主页"];
+    _tabsFocusButton = [self newFocusButtonForAction:BrowserTopBarActionTabs accessibilityLabel:@"标签页"];
+    _URLFocusButton = [self newFocusButtonForAction:BrowserTopBarActionURL accessibilityLabel:@"输入网址或搜索"];
+    _favoritesFocusButton = [self newFocusButtonForAction:BrowserTopBarActionFavorites accessibilityLabel:@"收藏"];
+    _fullscreenFocusButton = [self newFocusButtonForAction:BrowserTopBarActionFullscreen accessibilityLabel:@"顶部导航栏显示/隐藏"];
+    _menuFocusButton = [self newFocusButtonForAction:BrowserTopBarActionMenu accessibilityLabel:@"菜单"];
     _focusButtons = @[
         _backFocusButton,
         _refreshFocusButton,
