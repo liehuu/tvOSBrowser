@@ -544,7 +544,10 @@ static NSString *BrowserFullscreenInterceptScript(void) {
         // itself is NOT overridden here: the Desktop/Mobile switch in Advanced Menu must still work.
         "try{"
             "var nav=window.navigator;"
-            "if(nav){"
+            // Only the main frame needs the desktop fingerprint. This script is injected into
+            // every frame (including ad iframes); normalising all of them adds per-frame work
+            // without changing what a site's top-level player detection can see.
+            "if(nav&&window===window.top){"
                 "var ua=String(nav.userAgent||'');"
                 "var mobile=/iPhone|iPad|iPod|Mobile/.test(ua);"
                 "var plat=mobile?'iPhone':'MacIntel';"
@@ -553,8 +556,33 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                 "try{Object.defineProperty(nav,'maxTouchPoints',{get:function(){return mt;},configurable:true});}catch(e){}"
                 "try{Object.defineProperty(nav,'vendor',{get:function(){return 'Apple Computer, Inc.';},configurable:true});}catch(e){}"
                 "try{Object.defineProperty(nav,'standalone',{get:function(){return false;},configurable:true});}catch(e){}"
+                "try{Object.defineProperty(nav,'hardwareConcurrency',{get:function(){return 8;},configurable:true});}catch(e){}"
+                "try{Object.defineProperty(nav,'deviceMemory',{get:function(){return 8;},configurable:true});}catch(e){}"
+                "try{Object.defineProperty(nav,'languages',{get:function(){return ['zh-CN','zh','en'];},configurable:true});}catch(e){}"
             "}"
         "}catch(e){}"
+        // Click-assist for tiny controls (a close "x" is often a 12-16 px glyph inside a div).
+        // Sample a ring around the cursor and snap to the closest interactive element within the
+        // radius. Exposed for BrowserDOMInteractionService's hit-test wrapper in the main frame.
+        "function pfNearestInteractive(px,py,radius,selector){"
+            "var best=null,bestD=radius+1;"
+            "var offs=[[0,0],[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1],[2,0],[-2,0],[0,2],[0,-2]];"
+            "for(var i=0;i<offs.length;i++){"
+                "var sx=px+offs[i][0]*radius*0.5,sy=py+offs[i][1]*radius*0.5;"
+                "var hit=document.elementFromPoint(sx,sy);"
+                "if(!hit){continue;}"
+                "var cand=hit,found=null;"
+                "while(cand){if(cand.matches&&cand.matches(selector)){found=cand;break;}cand=cand.parentElement;}"
+                "if(!found){continue;}"
+                "var r=found.getBoundingClientRect();"
+                "if(!r||r.width<=0||r.height<=0){continue;}"
+                "var cx=r.left+r.width/2,cy=r.top+r.height/2;"
+                "var d=Math.sqrt((cx-px)*(cx-px)+(cy-py)*(cy-py));"
+                "if(d<=radius&&d<bestD){best=found;bestD=d;}"
+            "}"
+            "return best;"
+        "}"
+        "window.__browserNearestInteractive=pfNearestInteractive;"
         "var MSG='__BROWSER_PF_MSG__';"
         "function post(enter){"
             "try{"
@@ -1094,6 +1122,26 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     }
 
     id configuration = ((id (*)(id, SEL))objc_msgSend)((id)configurationClass, @selector(new));
+
+    // One shared WebContent process for every tab: opening a tab otherwise spins up a fresh
+    // process (and re-parses the injected script) each time, which is the slowest part of a
+    // multi-tab page load on tvOS.
+    static dispatch_once_t browserPoolOnce;
+    static id browserSharedProcessPool = nil;
+    dispatch_once(&browserPoolOnce, ^{
+        Class poolClass = NSClassFromString(@"WKProcessPool");
+        if (poolClass != Nil) {
+            browserSharedProcessPool = ((id (*)(id, SEL))objc_msgSend)((id)poolClass, @selector(new));
+        }
+    });
+    if (browserSharedProcessPool != nil) {
+        SEL setProcessPoolSelector = NSSelectorFromString(@"setProcessPool:");
+        if ([configuration respondsToSelector:setProcessPoolSelector]) {
+            ((void (*)(id, SEL, id))objc_msgSend)(configuration, setProcessPoolSelector, browserSharedProcessPool);
+            NSLog(@"[Perf] shared WKProcessPool installed for tab reuse");
+        }
+    }
+
     SEL allowsInlineMediaPlaybackSelector = NSSelectorFromString(@"setAllowsInlineMediaPlayback:");
     if (configuration != nil && [configuration respondsToSelector:allowsInlineMediaPlaybackSelector]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(configuration, allowsInlineMediaPlaybackSelector, allowsInlineMediaPlayback);
