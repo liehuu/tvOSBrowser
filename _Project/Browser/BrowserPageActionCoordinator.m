@@ -76,13 +76,13 @@ static UIColor *BrowserPageActionTextColor(void) {
                                                                                                   "if (!target) { return ''; }"
                                                                                                   "return target.placeholder || target.getAttribute('aria-label') || '';"];
     if ([placeholder isEqualToString:@""]) {
-        placeholder = [fieldTitle isEqualToString:fieldType] ? @"Text Input" : [NSString stringWithFormat:@"%@ Input", fieldTitle];
+        placeholder = [fieldTitle isEqualToString:fieldType] ? @"文本输入" : [NSString stringWithFormat:@"%@ 输入", fieldTitle];
     }
     NSString *testedFormResponse = [self.domInteractionService evaluateEditableElementJavaScriptAtPoint:point
                                                                                                  webView:webView
                                                                                                     body:@"var target = browserEditableTarget();"
                                                                                                          "return (target && target.form && target.form.hasAttribute('onsubmit')) ? 'true' : 'false';"];
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Input Text"
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"输入文本"
                                                                              message:[fieldTitle capitalizedString]
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
