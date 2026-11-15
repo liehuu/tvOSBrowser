@@ -791,6 +791,18 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     }];
 }
 
+// One-shot housekeeping: history lives in NSUserDefaults, while cache/cookies/local storage live
+// in WKWebsiteDataStore. Nothing else clears all three, so the Advanced Menu gets one entry for it.
+- (void)clearAllBrowsingDataAndReload {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"HISTORY"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    __weak typeof(self) weakSelf = self;
+    [BrowserWebView resetWebsiteDataWithCompletion:^{
+        weakSelf.host.browserPreviousURL = @"";
+        [[weakSelf.host browserWebView] reload];
+    }];
+}
+
 - (NSString *)mediaDiagnosticsJavaScript {
     return @"(function(){"
             "function canPlay(type){"
@@ -1160,6 +1172,11 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                                          handler:^{
         [self clearCookiesAndReload];
     }];
+    BrowserAdvancedMenuItem *clearAllItem = [self advancedMenuItemWithTitle:@"Clear All Browsing Data"
+                                                                      style:UIAlertActionStyleDestructive
+                                                                    handler:^{
+        [self clearAllBrowsingDataAndReload];
+    }];
 
     return @[
         [BrowserAdvancedMenuSection sectionWithTitle:@"Navigation"
@@ -1197,6 +1214,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                items:@[
             clearCacheItem,
             clearCookiesItem,
+            clearAllItem,
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"Help"
                                                items:@[
