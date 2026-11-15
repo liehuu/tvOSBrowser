@@ -559,6 +559,32 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                 "try{Object.defineProperty(nav,'hardwareConcurrency',{get:function(){return 8;},configurable:true});}catch(e){}"
                 "try{Object.defineProperty(nav,'deviceMemory',{get:function(){return 8;},configurable:true});}catch(e){}"
                 "try{Object.defineProperty(nav,'languages',{get:function(){return ['zh-CN','zh','en'];},configurable:true});}catch(e){}"
+                // build-17: when the user picks the desktop-Chrome identity, the HTTP User-Agent
+                // header alone is not enough. Sites such as iQiyi read navigator.userAgent /
+                // appVersion / userAgentData from JavaScript and compare them with the header; a
+                // WebKit JS string next to a Chrome header is an instant "page load error".
+                // Only the Chrome mode rewrites these, so a WebKit engine still looks like WebKit.
+                "var isChrome=/Chrome\\//.test(ua);"
+                "if(isChrome){"
+                    "try{Object.defineProperty(nav,'userAgent',{get:function(){return ua;},configurable:true});}catch(e){}"
+                    "try{Object.defineProperty(nav,'appVersion',{get:function(){return ua.replace(/^Mozilla\\//,'');},configurable:true});}catch(e){}"
+                    "try{Object.defineProperty(nav,'appName',{get:function(){return 'Netscape';},configurable:true});}catch(e){}"
+                    "try{Object.defineProperty(nav,'vendor',{get:function(){return 'Google Inc.';},configurable:true});}catch(e){}"
+                    // Chrome's UA-CH surface. Without it a site that asks for high-entropy hints
+                    // sees "no userAgentData" on a UA claiming to be Chrome, which is itself a bot
+                    // signal; with it the two answers agree.
+                    "try{"
+                        "var uad={brands:[{brand:'Chromium',version:'126'},{brand:'Google Chrome',version:'126'},{brand:'Not.A/Brand',version:'24'}],"
+                            "mobile:false,platform:'macOS',"
+                            "getHighEntropyValues:function(){"
+                                "return Promise.resolve({architecture:'x86',bitness:'64',model:'',platform:'macOS',"
+                                    "platformVersion:'14.0.0',uaFullVersion:'126.0.0.0',fullVersionList:this.brands,wow64:false});"
+                            "}};"
+                        "Object.defineProperty(nav,'userAgentData',{get:function(){return uad;},configurable:true});"
+                    "}catch(e){}"
+                    // The presence of window.chrome is a very common Chrome test.
+                    "try{if(!window.chrome){window.chrome={runtime:{},app:{isInstalled:false},csi:function(){return {};},loadTimes:function(){return {};}};}}catch(e){}"
+                "}"
             "}"
         "}catch(e){}"
         // Click-assist for tiny controls (a close "x" is often a 12-16 px glyph inside a div).
