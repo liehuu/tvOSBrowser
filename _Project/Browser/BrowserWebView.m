@@ -1350,7 +1350,23 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                 "var el=null;"
                 "try{el=document.elementFromPoint(px,py);}catch(e){return '';}"
                 "if(!el){return '';}"
-                "var node=el;"
+                // build-25: pick the best candidate on the way up, instead of pinning the FIRST
+                // overflow box encountered. Clicking an episode sits inside an <a>, and these pages
+                // stack clipped decorative wrappers (overflow:hidden with a fixed aspect ratio)
+                // between the link and the list. The old code pinned whichever of those it met
+                // first, so the arrows were claimed by a container that cannot scroll at all and the
+                // pointer felt stuck -- "点击了他，必须返回取消标记才能继续移动光标".
+                //
+                // Ranking instead of first-match:
+                //   * must be able to scroll AND clip (visible means it is not a scroller)
+                //   * must be TALL: a decorative aspect-ratio box is a few hundred pixels; a list of
+                //     episodes is much taller, and a short box being pinned is useless anyway
+                //   * must NOT be the closest wrapper around the thing just clicked, because that is
+                //     usually the tile itself, and paging a single tile is not what was asked for
+                //   * a real scroller (overflow:auto/scroll) outranks overflow:hidden, which only
+                //     accepts programmatic scrollTop as a fallback
+                "var best=null,bestScore=-1,bestCanX=false;"
+                "var node=el,clicked=el;"
                 "for(var depth=0;node&&node.nodeType===1&&depth<40;depth++){"
                     "if(node===document.body||node===document.documentElement){break;}"
                     "var canY=node.scrollHeight>node.clientHeight+1;"
@@ -1359,14 +1375,47 @@ static NSString *BrowserFullscreenInterceptScript(void) {
                         "var st=null;try{st=window.getComputedStyle(node);}catch(e){}"
                         "var oy=st?(st.overflowY||''):'visible';"
                         "var ox=st?(st.overflowX||''):'visible';"
-                        // Same rule as pfScrollAtPoint: overflow:hidden is accepted because many
-                        // site scrollers still honour a programmatic scrollTop.
-                        "if(canY&&oy!=='visible'){node.setAttribute(PF_PIN_ATTR,'y');pfPinStyle(node);return 'pinned';}"
-                        "if(canX&&ox!=='visible'){node.setAttribute(PF_PIN_ATTR,'x');pfPinStyle(node);return 'pinned';}"
+                        // visible is excluded: without clipping the element does not own a
+                        // scrollport, so scrolling it moves nothing.
+                        "var scrollsY=(canY&&oy!=='visible');"
+                        "var scrollsX=(canX&&ox!=='visible');"
+                        "if(scrollsY||scrollsX){"
+                            "var h=0,w=0;"
+                            "try{h=node.clientHeight||0;w=node.clientWidth||0;}catch(e){}"
+                            // A list worth pinning is tall. 320 px is above any aspect-ratio tile
+                            // wrapper on these pages and below a normal episode rail.
+                            "var tallEnough=(h>=320);"
+                            "var notTheTile=(node!==clicked);"
+                            "if(tallEnough&&notTheTile){"
+                                "var realScroller=(oy==='auto'||oy==='scroll'||ox==='auto'||ox==='scroll');"
+                                "var score=h+(realScroller?1000:0)+(w*2);"
+                                "if(score>bestScore){bestScore=score;best=node;bestCanX=(scrollsY?false:true);}"
+                            "}"
+                        "}"
                     "}"
                     "node=node.parentNode;"
                 "}"
-                "return '';"
+                "if(!best){return '';}"
+                // build-25: do not pin when the thing under the pointer is itself a clickable
+                // target. Clicking episode 7 means "play episode 7", not "lock this rail for
+                // paging": the click navigates away, and the pin then belongs to a list the user
+                // has left -- which is why moving the pointer afterwards felt stuck until the
+                // marker was cleared. The caller treats 'click' as "leave the pin alone and let the
+                // click through", so picking an episode still pages the list beforehand.
+                "var hit=clicked;"
+                "for(var d2=0;hit&&hit.nodeType===1&&d2<6;d2++){"
+                    "var tag=(hit.tagName||'').toLowerCase();"
+                    "if(tag==='a'||tag==='button'||tag==='area'){return 'click';}"
+                    "if(hit.getAttribute){"
+                        "var role=(hit.getAttribute('role')||'').toLowerCase();"
+                        "if(role==='link'||role==='button'){return 'click';}"
+                        "if(hit.hasAttribute&&hit.hasAttribute('onclick')){return 'click';}"
+                    "}"
+                    "hit=hit.parentNode;"
+                "}"
+                "best.setAttribute(PF_PIN_ATTR,bestCanX?'x':'y');"
+                "pfPinStyle(best);"
+                "return 'pinned';"
             "}catch(e){return '';}"
         "}"
         "function pfScrollPinned(dx,dy){"
