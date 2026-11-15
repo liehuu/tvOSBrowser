@@ -20,6 +20,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)browserRemoteInputControllerHandleMenuPress;
 - (void)browserRemoteInputControllerHandlePlayPausePress;
 - (void)browserRemoteInputControllerHandlePseudoFullscreenPress;
+- (void)browserRemoteInputControllerHandleFavoritesPress;
 - (void)browserRemoteInputControllerHandleAdvancedMenuPress;
 - (NSString *)browserRemoteInputControllerHoverStateAtCursorPoint:(CGPoint)point;
 - (void)browserRemoteInputControllerSetWebInteractionEnabled:(BOOL)enabled;
@@ -40,6 +41,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)init NS_UNAVAILABLE;
 
 - (void)handleGlobalSelectPressEndedNotification;
+- (void)handleGlobalArrowPressType:(UIPressType)type began:(BOOL)began;
 - (void)handlePressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event;
 - (BOOL)handlePressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event;
 - (BOOL)handleTouchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event;
