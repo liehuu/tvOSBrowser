@@ -4,6 +4,10 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 
+// Defined in AppDelegate.m: appends a line to browser-crash.log. Declared here so the load path
+// can leave a breadcrumb without pulling the whole delegate header in.
+void BrowserRecordNavigationCheckpoint(NSString *URLString);
+
 static NSString * const kBrowserWebViewClassName = @"WKWebView";
 static NSString * const kBrowserWebViewConfigurationClassName = @"WKWebViewConfiguration";
 static NSString * const kBrowserWebsiteDataStoreClassName = @"WKWebsiteDataStore";
@@ -319,6 +323,115 @@ static void BrowserConfigureMediaPlaybackPolicy(id configuration) {
         id preferences = ((id (*)(id, SEL))objc_msgSend)(configuration, preferencesSelector);
         BrowserSetBooleanSelectorIfAvailable(preferences, @"_setMediaPlaybackRequiresUserGesture:", NO);
         BrowserSetBooleanSelectorIfAvailable(preferences, @"_setRequiresUserGestureForMediaPlayback:", NO);
+    }
+}
+
+/// build-20: minimum shims for layout-observer APIs that the tvOS WebKit build can be missing.
+///
+/// iQiyi's home bundle calls `new ResizeObserver(...)` directly in at least two components with
+/// no `typeof` guard (its own other call sites do guard, which is how the difference is visible in
+/// the shipped JS). Where the constructor is absent that is a ReferenceError thrown during React's
+/// first render, so the component tree never mounts, `#root` stays empty, and the page's own
+/// 15-second watchdog prints "页面加载异常" -- exactly the report from the TV. Disguising the user
+/// agent cannot help: the watchdog asks whether the DOM rendered, not who the browser claims to be.
+///
+/// The shims are installed only when the native implementation is missing, so a modern WebKit is
+/// untouched, and they are deliberately inert-but-safe: the callback fires once on the next frame
+/// so layout code still runs, and observe/unobserve/disconnect stay no-ops afterwards. A site that
+/// depends on exact resize notifications ends up slightly stale, which is far better than a blank
+/// page.
+static NSString *BrowserObserverPolyfillScript(void) {
+    return @"(function(){"
+        "if(typeof window.ResizeObserver!=='function'){"
+            "var RO=function(cb){"
+                "this.cb=typeof cb==='function'?cb:function(){};"
+                "this.obs=this;"
+                "this._targets=[];"
+            "};"
+            "RO.prototype.observe=function(target){"
+                "if(!target){return;}"
+                "this._targets.push(target);"
+                "var self=this;"
+                "var report=function(){"
+                    "try{self.cb([{target:target,contentRect:{width:target.clientWidth||0,"
+                        "height:target.clientHeight||0}}],self);}catch(e){}"
+                "};"
+                "if(typeof window.requestAnimationFrame==='function'){"
+                    "window.requestAnimationFrame(report);"
+                "}else{setTimeout(report,16);}"
+            "};"
+            "RO.prototype.unobserve=function(){return;};"
+            "RO.prototype.disconnect=function(){this._targets=[];};"
+            "window.ResizeObserver=RO;"
+        "}"
+        "if(typeof window.IntersectionObserver!=='function'){"
+            "var IO=function(cb){"
+                "this.cb=typeof cb==='function'?cb:function(){};"
+                "this.root=null;this.rootMargin='0px';this.thresholds=[0];"
+            "};"
+            "IO.prototype.observe=function(target){"
+                "if(!target){return;}"
+                "var self=this;"
+                "var rect=function(){"
+                    "try{return target.getBoundingClientRect?target.getBoundingClientRect():{};}"
+                    "catch(e){return {};}"
+                "};"
+                "var report=function(){"
+                    "try{self.cb([{target:target,isIntersecting:true,intersectionRatio:1,"
+                        "boundingClientRect:rect(),intersectionRect:rect(),time:Date.now()}],self);}"
+                    "catch(e){}"
+                "};"
+                "if(typeof window.requestAnimationFrame==='function'){"
+                    "window.requestAnimationFrame(report);"
+                "}else{setTimeout(report,16);}"
+            "};"
+            "IO.prototype.unobserve=function(){return;};"
+            "IO.prototype.disconnect=function(){return;};"
+            "IO.prototype.takeRecords=function(){return [];};"
+            "window.IntersectionObserver=IO;"
+        "}"
+        "})();";
+}
+
+/// Installs the observer shims as a document-start user script, before any page script runs.
+static void BrowserInstallObserverPolyfillUserScript(id configuration) {
+    if (configuration == nil) {
+        return;
+    }
+    Class userScriptClass = NSClassFromString(kBrowserUserScriptClassName);
+    if (userScriptClass == Nil) {
+        return;
+    }
+
+    SEL userContentControllerGetter = NSSelectorFromString(@"userContentController");
+    SEL setUserContentControllerSelector = NSSelectorFromString(@"setUserContentController:");
+    SEL addUserScriptSelector = NSSelectorFromString(@"addUserScript:");
+    SEL userScriptInitializer = NSSelectorFromString(@"initWithSource:injectionTime:forMainFrameOnly:");
+    if (![configuration respondsToSelector:userContentControllerGetter] ||
+        ![configuration respondsToSelector:setUserContentControllerSelector] ||
+        ![userScriptClass instancesRespondToSelector:userScriptInitializer]) {
+        return;
+    }
+
+    Class userContentControllerClass = NSClassFromString(kBrowserUserContentControllerClassName);
+    id userContentController = ((id (*)(id, SEL))objc_msgSend)(configuration, userContentControllerGetter);
+    if (userContentController == nil && userContentControllerClass != Nil) {
+        userContentController = ((id (*)(id, SEL))objc_msgSend)((id)userContentControllerClass, @selector(new));
+        ((void (*)(id, SEL, id))objc_msgSend)(configuration, setUserContentControllerSelector, userContentController);
+    }
+    if (userContentController == nil || ![userContentController respondsToSelector:addUserScriptSelector]) {
+        return;
+    }
+
+    id userScript = ((id (*)(id, SEL))objc_msgSend)((id)userScriptClass, @selector(alloc));
+    userScript = ((id (*)(id, SEL, id, NSInteger, BOOL))objc_msgSend)(userScript,
+                                                                     userScriptInitializer,
+                                                                     BrowserObserverPolyfillScript(),
+                                                                     0,
+                                                                     NO);
+    if (userScript != nil) {
+        ((void (*)(id, SEL, id))objc_msgSend)(userContentController, addUserScriptSelector, userScript);
+        NSLog(@"[Polyfill] layout-observer shims installed at document start");
     }
 }
 
@@ -1248,6 +1361,8 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
     if (configuration != nil && [configuration respondsToSelector:allowsInlineMediaPlaybackSelector]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(configuration, allowsInlineMediaPlaybackSelector, allowsInlineMediaPlayback);
     }
+    // Added first so it is the earliest script registered for document start.
+    BrowserInstallObserverPolyfillUserScript(configuration);
     BrowserConfigurePrivateMediaPreferences(configuration);
     BrowserConfigureMediaPlaybackPolicy(configuration);
     BrowserInstallFullscreenInterceptUserScript(configuration);
@@ -1345,6 +1460,10 @@ static void BrowserInstallYouTubeCaptureUserScript(id configuration) {
         return;
     }
     self.lastRequest = request;
+    // build-20: leave a breadcrumb naming the site before the load starts. If the process dies
+    // mid-load, this line is the last thing in browser-crash.log and identifies the page that
+    // triggered it -- the piece of information a TV crash leaves nowhere else.
+    BrowserRecordNavigationCheckpoint(request.URL.absoluteString);
     SEL selector = NSSelectorFromString(@"loadRequest:");
     if ([self.runtimeWebView respondsToSelector:selector]) {
         ((id (*)(id, SEL, id))objc_msgSend)(self.runtimeWebView, selector, request);
