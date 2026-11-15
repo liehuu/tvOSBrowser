@@ -877,6 +877,45 @@ static UIColor *kTextColor(void) {
     return [result isEqualToString:@"inner"] || [result isEqualToString:@"iframe"];
 }
 
+// build-23: pin the scrollable region under the cursor so the arrows can page it without a mode
+// switch. Returns @"pinned" (non-nil) when a region was found, nil otherwise -- and "otherwise"
+// deliberately includes "nothing scrollable here", because that is also the signal the caller uses
+// to drop an existing pin when the user clicks elsewhere.
+- (nullable NSString *)browserRemoteInputControllerActivateScrollRegionAtCursorPoint {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return nil;
+    }
+    CGPoint point = [self browserDOMPointForCursor];
+    NSString *script = [NSString stringWithFormat:
+        @"(function(){"
+        "if(typeof window.__browserPfActivateScrollAtPoint!=='function'){return '';}"
+        "try{return window.__browserPfActivateScrollAtPoint(%f,%f);}catch(e){return '';}"
+        "})()", point.x, point.y];
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:script];
+    if (result.length == 0) {
+        return nil;
+    }
+    NSLog(@"[ScrollPin] activated at (%.0f,%.0f) -> %@", point.x, point.y, result);
+    return result;
+}
+
+// Scrolls the pinned container. 'none' means the pin is gone (page navigated, list re-rendered),
+// which the caller treats as "unpin and fall back to the document".
+- (BOOL)browserRemoteInputControllerScrollPinnedRegionByDelta:(CGPoint)delta {
+    BrowserWebView *webView = self.webview;
+    if (webView == nil) {
+        return NO;
+    }
+    NSString *script = [NSString stringWithFormat:
+        @"(function(){"
+        "if(typeof window.__browserPfScrollPinned!=='function'){return 'none';}"
+        "try{return window.__browserPfScrollPinned(%f,%f);}catch(e){return 'none';}"
+        "})()", delta.x, delta.y];
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:script];
+    return [result isEqualToString:@"inner"];
+}
+
 - (BOOL)browserRemoteInputControllerTogglePlaybackAtCursorPoint {
     BrowserWebView *webView = self.webview;
     if (webView == nil) {
