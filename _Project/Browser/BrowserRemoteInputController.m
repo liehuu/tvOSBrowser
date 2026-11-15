@@ -384,10 +384,16 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 // Hold acceleration was confirmed good in build-14 and is deliberately unchanged: the ramp still
 // reaches 96 pt after 28 repeats (~1.7 s at 0.06 s) while a tap stays precise.
 static CGFloat const kBrowserCursorArrowStep = 4.0;
-static CGFloat const kBrowserCursorArrowStepRamp[4] = {4.0, 20.0, 48.0, 96.0};
-static NSInteger const kBrowserCursorArrowRampThresholds[3] = {4, 12, 28};
-static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.06;
-static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
+// Holding an arrow ramps the step quickly. The old ramp only reached 20 pt after 4 repeats
+// (~0.24 s) and 48 pt after 12 (~0.72 s), so a held arrow crawled for most of a second -- which
+// users felt as "very slow" compared with scroll mode, where one press moves 44 pt. The first
+// step is still 4 pt so aiming stays precise, but the ramp arrives within a few frames.
+static CGFloat const kBrowserCursorArrowStepRamp[4] = {4.0, 24.0, 56.0, 104.0};
+// Repeat counter values at which each ramp entry above kicks in. Reaching 24 pt within two
+// repeats (~0.12 s) is what makes a hold feel immediate instead of sluggish.
+static NSInteger const kBrowserCursorArrowRampThresholds[3] = {1, 6, 16};
+static NSTimeInterval const kBrowserCursorArrowRepeatInterval = 0.055;
+static NSInteger const kBrowserCursorArrowMaxRepeats = 120;
 // Scroll mode reuses the same timer but measures travel in page content, so its steps are larger.
 static CGFloat const kBrowserScrollArrowStep = 44.0;
 static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0};
