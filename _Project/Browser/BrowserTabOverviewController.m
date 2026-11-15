@@ -151,8 +151,8 @@ static CGFloat const kTabCardURLHeight = 64.0;
     self.thumbnailView.hidden = YES;
     self.thumbnailView.image = nil;
     self.addIconBackdropView.hidden = NO;
-    self.titleLabel.text = @"New Tab";
-    self.urlLabel.text = @"Open the home page";
+    self.titleLabel.text = @"新建标签页";
+    self.urlLabel.text = @"打开主页";
     self.hintLabel.hidden = YES;
     [self updateAppearance];
 }
@@ -163,9 +163,9 @@ static CGFloat const kTabCardURLHeight = 64.0;
     self.thumbnailView.hidden = NO;
     self.thumbnailView.image = tab.snapshotImage;
     self.addIconBackdropView.hidden = YES;
-    self.titleLabel.text = tab.title.length > 0 ? tab.title : @"New Tab";
-    self.urlLabel.text = tab.URLString.length > 0 ? tab.URLString : @"Home page";
-    self.hintLabel.text = @"Play/Pause to Close";
+    self.titleLabel.text = tab.title.length > 0 ? tab.title : @"新建标签页";
+    self.urlLabel.text = tab.URLString.length > 0 ? tab.URLString : @"主页";
+    self.hintLabel.text = @"按上键关闭";
     self.hintLabel.hidden = !self.isFocused;
     [self updateAppearance];
 }
@@ -256,14 +256,14 @@ static CGFloat const kTabCardURLHeight = 64.0;
 
     UILabel *titleLabel = [UILabel new];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    titleLabel.text = @"Tabs";
+    titleLabel.text = @"标签页";
     titleLabel.textColor = UIColor.whiteColor;
     titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle1];
     [panelView.contentView addSubview:titleLabel];
 
     UILabel *subtitleLabel = [UILabel new];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    subtitleLabel.text = @"Switch tabs, open a new one, or close the focused tab.";
+    subtitleLabel.text = @"切换标签页、新建标签页，或关闭当前标签页。";
     subtitleLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.6];
     subtitleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     [panelView.contentView addSubview:subtitleLabel];
@@ -290,7 +290,7 @@ static CGFloat const kTabCardURLHeight = 64.0;
 
     UILabel *footerLabel = [UILabel new];
     footerLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    footerLabel.text = @"Select: Open   Play/Pause: Close Focused Tab   Menu: Dismiss";
+    footerLabel.text = @"Select：打开   上键：关闭当前标签页   Menu：关闭面板";
     footerLabel.textColor = [UIColor colorWithWhite:1.0 alpha:0.62];
     footerLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     footerLabel.textAlignment = NSTextAlignmentCenter;
@@ -433,7 +433,10 @@ static CGFloat const kTabCardURLHeight = 64.0;
         [self.overviewController dismiss];
         return;
     }
-    if (press != nil && press.type == UIPressTypePlayPause) {
+    // build-16: close the focused tab with the Up arrow as well. Learning remotes have no
+    // Play/Pause key, and the horizontal collection view does not use Up for focus movement.
+    // Play/Pause is kept for remotes that do have it.
+    if (press != nil && (press.type == UIPressTypeUpArrow || press.type == UIPressTypePlayPause)) {
         [self handleAlternateAction];
         return;
     }
