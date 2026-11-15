@@ -893,7 +893,14 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 
 - (NSString *)userAgentModeDisplayName {
     NSArray<NSString *> *names = @[@"桌面 Safari", @"移动 Safari", @"桌面 Chrome"];
-    return names[self.preferencesStore.userAgentMode];
+    // build-17: bounds-check before subscripting. An out-of-range stored mode (older build, a
+    // corrupted defaults plist, or a partially written value) used to raise NSRangeException and
+    // terminate the app, which users saw as a random crash while a page was loading.
+    NSInteger mode = self.preferencesStore.userAgentMode;
+    if (mode < 0 || mode >= (NSInteger)names.count) {
+        return names[0];
+    }
+    return names[(NSUInteger)mode];
 }
 
 - (void)presentMediaDiagnostics {
