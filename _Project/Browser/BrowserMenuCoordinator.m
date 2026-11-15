@@ -1111,6 +1111,16 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     }];
 }
 
+// Direct fullscreen entry from the menu. This is the fallback for remotes that have no Play/Pause
+// button and where holding the clickpad is not detected.
+- (BrowserAdvancedMenuItem *)togglePseudoFullscreenMenuItem {
+    return [self advancedMenuItemWithTitle:@"Toggle Video Fullscreen"
+                                     style:UIAlertActionStyleDefault
+                                   handler:^{
+        [self.host browserTogglePseudoFullscreen];
+    }];
+}
+
 - (NSArray<BrowserAdvancedMenuSection *> *)advancedMenuSections {
     BrowserAdvancedMenuItem *increaseFontSizeItem = [self advancedMenuItemWithTitle:@"Increase Font Size"
                                                                                style:UIAlertActionStyleDefault
@@ -1171,6 +1181,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"Video Playback"
                                                items:@[
+            [self togglePseudoFullscreenMenuItem],
             [self fullscreenVideoPlaybackToggleMenuItem],
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"Compatibility"
