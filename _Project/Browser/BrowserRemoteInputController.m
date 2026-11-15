@@ -60,6 +60,9 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic) BOOL awaitingSecondSelectPress;
 @property (nonatomic) NSTimer *cursorArrowRepeatTimer;
 @property (nonatomic) UIPressType cursorArrowRepeatPressType;
+// build-22: true between a press's begin and its end, independent of the repeat timer. The timer
+// is cancelled and restarted by the duplicate-begin path, so it cannot be used as the token.
+@property (nonatomic) BOOL arrowPressActive;
 @property (nonatomic) CFTimeInterval lastArrowEndedTimestamp;
 @property (nonatomic) UIPressType lastArrowEndedType;
 @property (nonatomic) BOOL playPauseLongPressConsumed;
@@ -111,6 +114,13 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     _cursorModeEnabled = cursorModeEnabled;
     self.lastTouchLocation = CGPointMake(-1, -1);
     [self stopManualScrollInertia];
+    // build-22: the mode switch is a double-Select, and the arrows that follow are a NEW press
+    // sequence. Any press state carried over from before the switch would make the first arrow of
+    // the new sequence look like a duplicate and be swallowed, or leave a dead token behind that
+    // blocks the next real press. Clearing both tokens here makes every switch start clean.
+    self.arrowPressActive = NO;
+    self.cursorArrowRepeatPressType = (UIPressType)-1;
+    [self cancelCursorArrowRepeat];
     [self refreshInteractionState];
     if (!wasCursorModeEnabled && cursorModeEnabled) {
         [self.host browserRemoteInputControllerPersistSession];
@@ -399,8 +409,17 @@ static CGFloat const kBrowserScrollArrowStep = 44.0;
 static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0};
 // build-16: holding an arrow in cursor mode scrolls the page once the pointer reaches the screen
 // edge, so paging down no longer depends on the (unreliable) double-Select mode switch.
-static CGFloat const kBrowserEdgeScrollStep = 160.0;
-static CGFloat const kBrowserEdgeScrollStepRamp[4] = {160.0, 300.0, 480.0, 700.0};
+// build-22: the steps were far too big. On a 1080-tall screen 160 pt is already 15% of the page and
+// the ramp went to 700 pt -- most of a screenful per tick -- so the content flew past the point the
+// user was tracking and nothing lined up any more ("翻得太多，接不上了"). Each tick now moves a
+// small slice, and the ramp climbs gently: a slow approach can still read what went by, while a
+// deliberate hold still covers ground.
+static CGFloat const kBrowserEdgeScrollStep = 72.0;
+static CGFloat const kBrowserEdgeScrollStepRamp[4] = {72.0, 120.0, 180.0, 240.0};
+// build-22: after the page scrolls under a pinned pointer, the pointer is pulled back off the edge
+// by this fraction of the distance the content travelled, so the two move together instead of the
+// content sliding away underneath a stationary pointer. Below 1 so the pointer trails the content.
+static CGFloat const kBrowserEdgeScrollCursorFollowRatio = 0.55;
 
 - (BOOL)isArrowPressType:(UIPressType)type {
     return type == UIPressTypeUpArrow ||
@@ -487,13 +506,45 @@ static CGFloat const kBrowserEdgeScrollStepRamp[4] = {160.0, 300.0, 480.0, 700.0
 // build-16: cursor mode, long press only. Once the pointer is pinned at the screen edge, keep the
 // same direction scrolling the page instead of doing nothing. A single tap never scrolls, so
 // aiming at a control near the edge cannot be spoiled by an accidental page jump.
+//
+// build-22: "翻得太快，接不上" had a structural cause, not just large numbers. The pointer stops at
+// the edge and stays there, so every subsequent tick scrolled the page again with the pointer
+// pinned -- the content kept sliding out from under the thing being aimed at, and there was no
+// way to follow it. After a page is scrolled, the pointer is pulled back from the edge by a
+// fraction of the distance the content just travelled. The content and the pointer now move
+// together, which is what makes the motion readable.
 - (BOOL)scrollPageAtCursorEdgeForPressType:(UIPressType)type repeatCount:(NSInteger)repeatCount {
     if (![self isArrowPressType:type]) {
         return NO;
     }
-    return [self applyManualScrollDelta:[self scrollDeltaForPressType:type
-                                                                  step:[self edgeScrollStepForRepeatCount:repeatCount]]
-                     allowInnerScroll:YES];
+    CGFloat step = [self edgeScrollStepForRepeatCount:repeatCount];
+    BOOL didScroll = [self applyManualScrollDelta:[self scrollDeltaForPressType:type step:step]
+                                  allowInnerScroll:YES];
+    if (didScroll) {
+        [self pullCursorBackFromEdgeForPressType:type step:step];
+    }
+    return didScroll;
+}
+
+// Moves the pointer back off the edge so it rides along with the content that just scrolled.
+// The factor is below 1 on purpose: the pointer should trail the content slightly, not be dragged
+// across the screen, or the user loses the aim they just established.
+- (void)pullCursorBackFromEdgeForPressType:(UIPressType)type step:(CGFloat)step {
+    CGFloat follow = step * kBrowserEdgeScrollCursorFollowRatio;
+    CGRect bounds = self.rootView.bounds;
+    CGRect rect = self.cursorView.frame;
+    switch (type) {
+        case UIPressTypeUpArrow:    rect.origin.y += follow; break;
+        case UIPressTypeDownArrow:  rect.origin.y -= follow; break;
+        case UIPressTypeLeftArrow:  rect.origin.x += follow; break;
+        case UIPressTypeRightArrow: rect.origin.x -= follow; break;
+        default: return;
+    }
+    CGFloat maxX = MAX(0.0, CGRectGetWidth(bounds) - CGRectGetWidth(rect));
+    CGFloat maxY = MAX(0.0, CGRectGetHeight(bounds) - CGRectGetHeight(rect));
+    rect.origin.x = MIN(MAX(rect.origin.x, 0.0), maxX);
+    rect.origin.y = MIN(MAX(rect.origin.y, 0.0), maxY);
+    self.cursorView.frame = rect;
 }
 
 - (void)updateCursorImageForCurrentPosition {
@@ -534,8 +585,24 @@ static CGFloat const kBrowserEdgeScrollStepRamp[4] = {160.0, 300.0, 480.0, 700.0
         if (strongSelf == nil) {
             return;
         }
-        if (![strongSelf canUseArrowsForMovement] ||
-            ++repeatCount > kBrowserCursorArrowMaxRepeats) {
+        // build-22: these two conditions must NOT share one branch. The old code read
+        //     if (!canUseArrowsForMovement || ++repeatCount > MAX) { cancel; return; }
+        // and because || short-circuits, the counter was not even incremented when the first
+        // condition was true -- but the timer was still cancelled and cursorArrowRepeatPressType
+        // was still wiped. canUseArrowsForMovement flips to NO for a moment whenever an alert is
+        // presented, the top bar takes focus, the tab overview opens, or pseudo fullscreen engages,
+        // and a double-Select mode switch is exactly that kind of moment. The result was a dead
+        // repeat timer for a button that was still physically held: from then on the arrow only
+        // moved the cursor 4 pt per press, which is precisely the reported "very slow, only one
+        // press at a time".
+        //
+        // Now a blocked tick simply does nothing and keeps the press alive; only the repeat ceiling
+        // ends it. If the button is released while blocked, handleArrowPressEnded: still clears the
+        // state, so nothing is left running.
+        if (![strongSelf canUseArrowsForMovement]) {
+            return;
+        }
+        if (++repeatCount > kBrowserCursorArrowMaxRepeats) {
             [strongSelf cancelCursorArrowRepeat];
             return;
         }
@@ -578,7 +645,9 @@ static CGFloat const kBrowserEdgeScrollStepRamp[4] = {160.0, 300.0, 480.0, 700.0
     BOOL hadRepeatTimer = (self.cursorArrowRepeatTimer != nil);
     [self.cursorArrowRepeatTimer invalidate];
     self.cursorArrowRepeatTimer = nil;
-    self.cursorArrowRepeatPressType = (UIPressType)-1;
+    // build-22: the press type is NOT cleared here. Duplicate begins arrive on a later run loop
+    // turn; if this method also wiped the type, the duplicate could not be told apart from a fresh
+    // press and would restart the ramp. handleArrowPressEnded: clears it when the press really ends.
     if (hadRepeatTimer) {
         [self updateCursorImageForCurrentPosition];
         [self.host browserRemoteInputControllerPersistSession];
@@ -587,11 +656,42 @@ static CGFloat const kBrowserEdgeScrollStepRamp[4] = {160.0, 300.0, 480.0, 700.0
 
 - (void)handleArrowPressBegan:(UIPressType)type {
     if (![self canUseArrowsForMovement]) {
+        NSLog(@"[InputTrace][Root] arrow began type=%@ IGNORED (arrows not usable)",
+              BrowserPressTypeString(type));
         return;
     }
-    if (self.cursorArrowRepeatTimer != nil && self.cursorArrowRepeatPressType == type) {
+    // build-22: this method is reached TWICE for one physical press -- once synchronously through
+    // pressesBegan: and once asynchronously through the sendEvent: bridge, which republishes the
+    // press on the next run loop turn. The old guard compared the repeat timer's press type, which
+    // is not enough: beginCursorArrowRepeatWithPressType: starts by calling cancelCursorArrowRepeat,
+    // and that resets the press type to -1. A late duplicate therefore never matched, cancelled the
+    // timer the first call had just started, and started a fresh one -- so the repeat counter went
+    // back to 0 and the ramp never advanced. The visible symptom was exactly what was reported: one
+    // press moves the cursor a tiny bit, holding it barely moves at all, because the hold kept
+    // being restarted (and, at release, degenerated into a single 4 pt step).
+    //
+    // A press token is what makes this idempotent: the token is set when a press begins and cleared
+    // when it ends, so a duplicate begin for the same type is a no-op regardless of timer state.
+    if (self.arrowPressActive && self.cursorArrowRepeatPressType == type) {
+        NSLog(@"[InputTrace][Root] arrow began type=%@ IGNORED (duplicate of the active press)",
+              BrowserPressTypeString(type));
         return;
     }
+    // The bridge republishes on the next run loop turn, so a very short tap can deliver its Begin
+    // AFTER its End. Starting a repeat timer at that point would move the cursor with no key held.
+    // A begin that arrives within the duplicate-end window of the same type is that late Begin.
+    if (self.lastArrowEndedType == type &&
+        (CACurrentMediaTime() - self.lastArrowEndedTimestamp) < 0.05) {
+        NSLog(@"[InputTrace][Root] arrow began type=%@ IGNORED (arrived after its own end)",
+              BrowserPressTypeString(type));
+        return;
+    }
+    self.arrowPressActive = YES;
+    NSLog(@"[InputTrace][Root] arrow began type=%@ cursor=(%.0f,%.0f) mode=%@",
+          BrowserPressTypeString(type),
+          self.cursorView.frame.origin.x,
+          self.cursorView.frame.origin.y,
+          self.cursorModeEnabled ? @"cursor" : @"scroll");
     [self beginCursorArrowRepeatWithPressType:type];
 }
 
@@ -738,6 +838,7 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
 
 - (BOOL)handleArrowPressEnded:(UIPressType)type {
     if (![self canUseArrowsForMovement]) {
+        self.arrowPressActive = NO;
         [self cancelCursorArrowRepeat];
         return NO;
     }
@@ -745,15 +846,22 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
     // Both the native press channel and the sendEvent: bridge report this; drop the duplicate.
     CFTimeInterval now = CACurrentMediaTime();
     if (self.lastArrowEndedType == type && (now - self.lastArrowEndedTimestamp) < 0.05) {
+        NSLog(@"[InputTrace][Root] arrow ended type=%@ IGNORED (duplicate within 50 ms)",
+              BrowserPressTypeString(type));
         return YES;
     }
     self.lastArrowEndedType = type;
     self.lastArrowEndedTimestamp = now;
 
-    BOOL hadRepeatTimer = (self.cursorArrowRepeatTimer != nil);
+    // build-22: the repeat timer is NOT a reliable "did the begin phase run" signal, because the
+    // duplicate-begin path can leave the timer replaced or already fired. arrowPressActive is set
+    // by handleArrowPressBegan: and only cleared here, so it answers that question directly.
+    BOOL hadBeganPhase = self.arrowPressActive;
+    self.arrowPressActive = NO;
+    self.cursorArrowRepeatPressType = (UIPressType)-1;
     [self cancelCursorArrowRepeat];
     BOOL didMove = YES;
-    if (!hadRepeatTimer) {
+    if (!hadBeganPhase) {
         // Began phase never reached pressesBegan: treat this as a single tap step.
         if (self.cursorModeEnabled) {
             didMove = [self moveCursorWithPressType:type];
@@ -766,11 +874,12 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
         [self.host browserRemoteInputControllerPersistSession];
     }
 
-    NSLog(@"[InputTrace][Root] arrow ended type=%@ cursor=(%.0f,%.0f) moved=%@",
+    NSLog(@"[InputTrace][Root] arrow ended type=%@ cursor=(%.0f,%.0f) moved=%@ began=%@",
           BrowserPressTypeString(type),
           self.cursorView.frame.origin.x,
           self.cursorView.frame.origin.y,
-          didMove ? @"YES" : @"NO");
+          didMove ? @"YES" : @"NO",
+          hadBeganPhase ? @"YES" : @"NO");
 
     // The cursor already sits at the top edge and Up cannot move it any further:
     // hand that edge case back to the top navigation bar so its old shortcut still works.
