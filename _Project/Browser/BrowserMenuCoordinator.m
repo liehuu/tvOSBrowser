@@ -456,6 +456,10 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     [self.host browserPresentViewController:menuViewController];
 }
 
+- (void)showFavoritesMenu {
+    [self presentFavoritesMenu];
+}
+
 - (UIAlertController *)browserAlertControllerWithTitle:(NSString *)title message:(NSString *)message {
     return [UIAlertController alertControllerWithTitle:title
                                                message:message
@@ -611,6 +615,62 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(__unused UIAlertAction *action) {
         [weakSelf presentAddFavoritePrompt];
+    }]];
+    [alertController addAction:[self browserActionWithTitle:@"Add Favorite by URL"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(__unused UIAlertAction *action) {
+        [weakSelf presentAddFavoriteByURLPrompt];
+    }]];
+    [alertController addAction:[self browserCancelAction]];
+    [self.host browserPresentViewController:alertController];
+}
+
+// Lets the user pre-configure shortcuts without visiting each site first.
+- (void)presentAddFavoriteByURLPrompt {
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Add Favorite by URL"
+                                                                       message:@"Enter the address, then a name."];
+    __weak typeof(self) weakSelf = self;
+
+    [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.keyboardType = UIKeyboardTypeURL;
+        textField.placeholder = @"https://example.com";
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.textColor = MenuTextColor();
+        [textField setReturnKeyType:UIReturnKeyNext];
+    }];
+    [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.keyboardType = UIKeyboardTypeDefault;
+        textField.placeholder = @"Name (optional)";
+        textField.textColor = MenuTextColor();
+        [textField setReturnKeyType:UIReturnKeyDone];
+    }];
+
+    [alertController addAction:[self browserActionWithTitle:@"Save"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(__unused UIAlertAction *action) {
+        NSString *urlString = [alertController.textFields.firstObject.text
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSString *name = alertController.textFields.count > 1
+            ? [alertController.textFields[1].text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+            : @"";
+        if (urlString.length == 0) {
+            return;
+        }
+        if ([urlString rangeOfString:@"://"].location == NSNotFound) {
+            urlString = [@"https://" stringByAppendingString:urlString];
+        }
+        if (name.length == 0) {
+            name = urlString;
+        }
+
+        NSMutableArray *favorites = [[[NSUserDefaults standardUserDefaults] arrayForKey:@"FAVORITES"] mutableCopy];
+        if (favorites == nil) {
+            favorites = [NSMutableArray array];
+        }
+        [favorites addObject:@[urlString, name]];
+        [weakSelf saveFavoritesArray:favorites];
+        NSLog(@"[Favorites] saved manual entry count=%lu url=%@", (unsigned long)favorites.count, urlString);
     }]];
     [alertController addAction:[self browserCancelAction]];
     [self.host browserPresentViewController:alertController];
