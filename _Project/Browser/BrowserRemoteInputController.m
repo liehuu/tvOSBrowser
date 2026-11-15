@@ -133,7 +133,14 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         [self.host browserRemoteInputControllerPseudoFullscreenActive];
 }
 
-- (BOOL)applyManualScrollDelta:(CGPoint)delta {
+- (BOOL)applyManualScrollDelta:(CGPoint)delta allowInnerScroll:(BOOL)allowInnerScroll {
+    // build-16: discrete arrow steps prefer the innermost scrollable element under the cursor.
+    // The inertia display link passes NO: a synchronous JS round-trip every frame would block
+    // the main thread. Returning YES here keeps the document-level UIScrollView still.
+    if (allowInnerScroll &&
+        [self.host browserRemoteInputControllerScrollInnerContainerByDelta:delta]) {
+        return YES;
+    }
     UIScrollView *scrollView = [self.host browserRemoteInputControllerActiveScrollView];
     if (scrollView == nil) {
         return NO;
@@ -186,7 +193,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     self.manualScrollLastTimestamp = displayLink.timestamp;
 
     CGPoint step = CGPointMake(self.manualScrollVelocity.x * deltaTime, self.manualScrollVelocity.y * deltaTime);
-    BOOL didMove = [self applyManualScrollDelta:step];
+    BOOL didMove = [self applyManualScrollDelta:step allowInnerScroll:NO];
 
     CGFloat decay = pow(0.92, deltaTime * 60.0);
     self.manualScrollVelocity = CGPointMake(self.manualScrollVelocity.x * decay, self.manualScrollVelocity.y * decay);
@@ -233,7 +240,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 
     if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
         // Fullscreen Select is handled synchronously in handlePressesEnded. Running a deferred
-        // page action here would toggle playback a second time 0.3 s later.
+        // page action here would toggle playback a second time 0.46 s later.
         return;
     }
 
@@ -246,7 +253,9 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 
 - (void)handleSelectPressEnded {
     CFTimeInterval now = CACurrentMediaTime();
-    if (self.awaitingSecondSelectPress && (now - self.lastSelectPressTimestamp) < 0.35) {
+    // build-16: widen the double-Select window and, crucially, keep the deferred single-tap
+    // action scheduled AFTER the window so it can never consume the second press first.
+    if (self.awaitingSecondSelectPress && (now - self.lastSelectPressTimestamp) < 0.42) {
         self.awaitingSecondSelectPress = NO;
         self.lastSelectPressTimestamp = now;
         [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(handleDeferredSelectPressAction) object:nil];
@@ -259,7 +268,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     self.awaitingSecondSelectPress = YES;
     self.lastSelectPressTimestamp = now;
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(handleDeferredSelectPressAction) object:nil];
-    [self performSelector:@selector(handleDeferredSelectPressAction) withObject:nil afterDelay:0.3];
+    [self performSelector:@selector(handleDeferredSelectPressAction) withObject:nil afterDelay:0.46];
 }
 
 - (void)handlePlayPauseDoubleTap:(UITapGestureRecognizer *)sender {
@@ -332,7 +341,7 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 
     CGPoint translation = [gestureRecognizer translationInView:self.rootView];
     if (!CGPointEqualToPoint(translation, CGPointZero)) {
-        [self applyManualScrollDelta:CGPointMake(-translation.x, -translation.y)];
+        [self applyManualScrollDelta:CGPointMake(-translation.x, -translation.y) allowInnerScroll:NO];
         [gestureRecognizer setTranslation:CGPointZero inView:self.rootView];
         self.manualScrollLastMovementTimestamp = CACurrentMediaTime();
     }
@@ -382,6 +391,10 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 90;
 // Scroll mode reuses the same timer but measures travel in page content, so its steps are larger.
 static CGFloat const kBrowserScrollArrowStep = 44.0;
 static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0};
+// build-16: holding an arrow in cursor mode scrolls the page once the pointer reaches the screen
+// edge, so paging down no longer depends on the (unreliable) double-Select mode switch.
+static CGFloat const kBrowserEdgeScrollStep = 160.0;
+static CGFloat const kBrowserEdgeScrollStepRamp[4] = {160.0, 300.0, 480.0, 700.0};
 
 - (BOOL)isArrowPressType:(UIPressType)type {
     return type == UIPressTypeUpArrow ||
@@ -455,6 +468,28 @@ static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0}
     }
 }
 
+- (CGFloat)edgeScrollStepForRepeatCount:(NSInteger)repeatCount {
+    CGFloat step = kBrowserEdgeScrollStep;
+    for (NSInteger i = 0; i < 3; i++) {
+        if (repeatCount > kBrowserCursorArrowRampThresholds[i]) {
+            step = kBrowserEdgeScrollStepRamp[i + 1];
+        }
+    }
+    return step;
+}
+
+// build-16: cursor mode, long press only. Once the pointer is pinned at the screen edge, keep the
+// same direction scrolling the page instead of doing nothing. A single tap never scrolls, so
+// aiming at a control near the edge cannot be spoiled by an accidental page jump.
+- (BOOL)scrollPageAtCursorEdgeForPressType:(UIPressType)type repeatCount:(NSInteger)repeatCount {
+    if (![self isArrowPressType:type]) {
+        return NO;
+    }
+    return [self applyManualScrollDelta:[self scrollDeltaForPressType:type
+                                                                  step:[self edgeScrollStepForRepeatCount:repeatCount]]
+                     allowInnerScroll:YES];
+}
+
 - (void)updateCursorImageForCurrentPosition {
     self.cursorView.image = BrowserDefaultCursor();
     if ([self.host browserRemoteInputControllerTabOverviewVisible] &&
@@ -480,7 +515,7 @@ static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0}
     if (self.cursorModeEnabled) {
         [self moveCursorWithPressType:type];
     } else {
-        [self applyManualScrollDelta:[self scrollDeltaForPressType:type step:kBrowserScrollArrowStep]];
+        [self applyManualScrollDelta:[self scrollDeltaForPressType:type step:kBrowserScrollArrowStep] allowInnerScroll:YES];
     }
 
     __block NSInteger repeatCount = 0;
@@ -507,7 +542,10 @@ static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0}
                     step = kBrowserCursorArrowStepRamp[i + 1];
                 }
             }
-            [strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType step:step];
+            if (![strongSelf moveCursorWithPressType:strongSelf.cursorArrowRepeatPressType step:step]) {
+                [strongSelf scrollPageAtCursorEdgeForPressType:strongSelf.cursorArrowRepeatPressType
+                                                  repeatCount:repeatCount];
+            }
         } else {
             CGFloat step = kBrowserScrollArrowStep;
             for (i = 0; i < 3; i++) {
@@ -516,7 +554,8 @@ static CGFloat const kBrowserScrollArrowStepRamp[4] = {44.0, 80.0, 140.0, 220.0}
                 }
             }
             [strongSelf applyManualScrollDelta:[strongSelf scrollDeltaForPressType:strongSelf.cursorArrowRepeatPressType
-                                                                              step:step]];
+                                                                              step:step]
+                             allowInnerScroll:YES];
         }
     }];
 }
@@ -707,7 +746,8 @@ static CFTimeInterval const kBrowserSeekHoldThreshold = 0.45;
             [self updateCursorImageForCurrentPosition];
         } else {
             didMove = [self applyManualScrollDelta:[self scrollDeltaForPressType:type
-                                                                            step:kBrowserScrollArrowStep]];
+                                                                            step:kBrowserScrollArrowStep]
+                              allowInnerScroll:YES];
         }
         [self.host browserRemoteInputControllerPersistSession];
     }
