@@ -19,6 +19,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)browserRemoteInputControllerHandlePrimaryAction;
 - (void)browserRemoteInputControllerHandleMenuPress;
 - (void)browserRemoteInputControllerHandlePlayPausePress;
+// A learning remote's dedicated Play key arrives as a PlayPause press. Returns YES when a
+// video was found, so the input controller treats the press as playback instead of the URL sheet.
+- (BOOL)browserRemoteInputControllerHandleRemotePlayRequest;
 - (void)browserRemoteInputControllerHandlePseudoFullscreenPress;
 - (void)browserRemoteInputControllerHandleFavoritesPress;
 - (BOOL)browserRemoteInputControllerPseudoFullscreenActive;
