@@ -584,10 +584,32 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
 }
 
 - (void)presentFavoritesMenu {
+    [self showFavoritesMenuWithAutoLaunchOption:NO completion:nil];
+}
+
+- (void)showFavoritesMenuWithAutoLaunchOption:(BOOL)includeAutoLaunchOption
+                                  completion:(void (^ _Nullable)(void))completion {
     NSArray *favorites = [[NSUserDefaults standardUserDefaults] arrayForKey:@"FAVORITES"];
     UIAlertController *alertController = [self browserAlertControllerWithTitle:@"Favorites" message:@""];
     __weak typeof(self) weakSelf = self;
-    
+
+    // The menu can be dismissed by picking an entry or by cancelling; both must run the
+    // completion so the launch sequence can continue.
+    __block BOOL completionFired = NO;
+    void (^finish)(void) = ^{
+        if (completionFired) {
+            return;
+        }
+        completionFired = YES;
+        if (completion != nil) {
+            // Wait for the alert to finish dismissing before presenting anything else.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                completion();
+            });
+        }
+    };
+
     [favorites enumerateObjectsUsingBlock:^(NSArray *entry, NSUInteger index, BOOL *stop) {
         NSString *URLString = entry.count > 0 ? entry[0] : @"";
         NSString *title = entry.count > 1 ? entry[1] : @"";
@@ -600,6 +622,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                               style:UIAlertActionStyleDefault
                                                             handler:^(__unused UIAlertAction *action) {
             [weakSelf loadStoredURLString:URLString];
+            finish();
         }]];
     }];
     
@@ -608,6 +631,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                           style:UIAlertActionStyleDestructive
                                                         handler:^(__unused UIAlertAction *action) {
             [weakSelf presentDeleteFavoriteMenu];
+            finish();
         }]];
     }
     
@@ -615,13 +639,30 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(__unused UIAlertAction *action) {
         [weakSelf presentAddFavoritePrompt];
+        finish();
     }]];
     [alertController addAction:[self browserActionWithTitle:@"Add Favorite by URL"
                                                       style:UIAlertActionStyleDefault
                                                     handler:^(__unused UIAlertAction *action) {
         [weakSelf presentAddFavoriteByURLPrompt];
+        finish();
     }]];
-    [alertController addAction:[self browserCancelAction]];
+
+    if (includeAutoLaunchOption) {
+        __weak typeof(self) weakSelf2 = self;
+        [alertController addAction:[self browserActionWithTitle:@"Don't Open Favorites on Launch"
+                                                          style:UIAlertActionStyleDestructive
+                                                        handler:^(__unused UIAlertAction *action) {
+            weakSelf2.preferencesStore.dontShowFavoritesOnLaunch = YES;
+            NSLog(@"[Favorites] auto-launch disabled");
+        }]];
+    }
+
+    [alertController addAction:[self browserActionWithTitle:nil
+                                                      style:UIAlertActionStyleCancel
+                                                    handler:^(__unused UIAlertAction *action) {
+        finish();
+    }]];
     [self.host browserPresentViewController:alertController];
 }
 
