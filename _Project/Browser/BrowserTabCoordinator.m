@@ -503,6 +503,14 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
     BrowserTabViewModel *currentTab = self.activeTab;
     [self captureSnapshotForTab:currentTab];
 
+    // build-17: stop the outgoing tab's audio/video before the new tab takes over. Previously the
+    // old WKWebView was only parked for thumbnailing, so a video kept decoding (and audible) in the
+    // background after switching tabs. pauseAllMediaPlayback is called BEFORE the switch because
+    // self.activeWebView is reassigned by the next call.
+    if (tabIndex != self.viewModel.activeTabIndex) {
+        [self.activeWebView pauseAllMediaPlayback];
+    }
+
     [self.viewModel switchToTabAtIndex:tabIndex];
     [self initWebView];
     [self.rootView bringSubviewToFront:self.cursorView];
@@ -519,6 +527,16 @@ static CGFloat const kThumbnailStagingOffset = 4096.0;
 
     BOOL closingActiveTab = tabIndex == self.viewModel.activeTabIndex;
     BrowserTabViewModel *tab = self.viewModel.tabs[tabIndex];
+
+    // build-17: actually stop playback before dropping the web view. removeFromSuperview + removing
+    // the dictionary entry only detaches the view from the hierarchy; the WKWebView keeps its own
+    // process and the <video> element keeps decoding, so a closed tab stayed audible in the
+    // background. Pause first, then tear the content down.
+    BrowserWebView *closingWebView = self.webViewsByTabIdentifier[tab.identifier];
+    if (closingWebView != nil) {
+        [closingWebView pauseAllMediaPlayback];
+    }
+
     [self.webViewsByTabIdentifier[tab.identifier] removeFromSuperview];
     [self.webViewsByTabIdentifier removeObjectForKey:tab.identifier];
     [self.viewModel removeTabAtIndex:tabIndex];
