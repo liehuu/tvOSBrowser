@@ -21,6 +21,9 @@
 #import "ViewController.h"
 
 static NSString * const kBrowserGlobalSelectPressEndedNotification = @"BrowserGlobalSelectPressEndedNotification";
+static NSString * const kBrowserGlobalArrowPressNotification = @"BrowserGlobalArrowPressNotification";
+static NSString * const kBrowserGlobalArrowPressTypeKey = @"type";
+static NSString * const kBrowserGlobalArrowPressBeganKey = @"began";
 
 static UIColor *kTextColor(void) {
     if (@available(tvOS 13, *)) {
@@ -49,6 +52,7 @@ static UIColor *kTextColor(void) {
 @property (nonatomic) BOOL pseudoFullscreenActive;
 @property (nonatomic) BOOL pseudoFullscreenCursorModeWasEnabled;
 @property (nonatomic) BOOL pseudoFullscreenTopBarWasVisible;
+@property (nonatomic, copy) NSString *pseudoFullscreenURLString;
 
 @end
 
@@ -119,6 +123,14 @@ static UIColor *kTextColor(void) {
                                              selector:@selector(handleGlobalSelectPressEndedNotification:)
                                                  name:kBrowserGlobalSelectPressEndedNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handlePseudoFullscreenRequestNotification:)
+                                                 name:BrowserPseudoFullscreenRequestNotification
+                                               object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleGlobalArrowPressNotification:)
+                                                 name:kBrowserGlobalArrowPressNotification
+                                               object:nil];
 
     [self.tabCoordinator restoreInitialStateOrCreateFirstTab];
 }
@@ -160,6 +172,17 @@ static UIColor *kTextColor(void) {
 - (void)handleGlobalSelectPressEndedNotification:(NSNotification *)notification {
     (void)notification;
     [self.remoteInputController handleGlobalSelectPressEndedNotification];
+}
+
+- (void)handleGlobalArrowPressNotification:(NSNotification *)notification {
+    id typeValue = notification.userInfo[kBrowserGlobalArrowPressTypeKey];
+    id beganValue = notification.userInfo[kBrowserGlobalArrowPressBeganKey];
+    if (![typeValue isKindOfClass:[NSNumber class]]) {
+        return;
+    }
+    UIPressType type = (UIPressType)[typeValue integerValue];
+    BOOL began = [beganValue isKindOfClass:[NSNumber class]] ? [beganValue boolValue] : NO;
+    [self.remoteInputController handleGlobalArrowPressType:type began:began];
 }
 
 #pragma mark - Helpers
@@ -391,7 +414,7 @@ static UIColor *kTextColor(void) {
 
 - (void)showHintsAlert {
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Usage Guide"
-                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nSingle tap to Menu button to Go Back, or Exit on root page.\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nDouble tap the Play/Pause to show the Advanced Menu with more options.\nLong press the Play/Pause button to toggle fullscreen for the playing video.\nUse the tabs icon in the top bar to open the tab overview."
+                                                                             message:@"Double press the touch area to switch between cursor & scroll mode.\nPress the touch area while in cursor mode to click.\nUse the Up/Down/Left/Right arrows to move the cursor step by step (hold to keep moving).\nSingle tap the Menu button to Go Back, or Exit on root page.\nLong press the Menu button to open Favorites (bookmarks).\nSingle tap the Play/Pause button to: Go Forward, Enter URL or Reload Page.\nDouble tap the Play/Pause to show the Advanced Menu with more options.\nLong press the Play/Pause button to toggle fullscreen for the playing video.\nThe website's own fullscreen button is also redirected to this fullscreen.\nUse the tabs icon in the top bar to open the tab overview."
                                                                       preferredStyle:UIAlertControllerStyleAlert];
 
     __weak typeof(self) weakSelf = self;
@@ -660,6 +683,12 @@ static UIColor *kTextColor(void) {
 }
 
 - (void)browserRemoteInputControllerHandleMenuPress {
+    // In pseudo fullscreen, a single Menu press leaves fullscreen first (like a video player).
+    if (self.pseudoFullscreenActive) {
+        [self exitPseudoFullscreen];
+        return;
+    }
+
     UIAlertController *alertController = (UIAlertController *)self.presentedViewController;
     if (alertController != nil) {
         [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
@@ -690,6 +719,27 @@ static UIColor *kTextColor(void) {
 
 - (void)browserRemoteInputControllerHandleAdvancedMenuPress {
     [self showAdvancedMenu];
+}
+
+- (void)browserRemoteInputControllerHandleFavoritesPress {
+    [self.menuCoordinator showFavoritesMenu];
+}
+
+- (void)handlePseudoFullscreenRequestNotification:(NSNotification *)notification {
+    BOOL enter = YES;
+    id value = notification.userInfo[BrowserPseudoFullscreenRequestEnterKey];
+    if ([value isKindOfClass:[NSNumber class]]) {
+        enter = [value boolValue];
+    }
+    NSLog(@"[PseudoFullscreen] native request enter=%@ active=%@",
+          enter ? @"YES" : @"NO",
+          self.pseudoFullscreenActive ? @"YES" : @"NO");
+
+    if (enter) {
+        [self enterPseudoFullscreenFromPage];
+    } else if (self.pseudoFullscreenActive) {
+        [self exitPseudoFullscreen];
+    }
 }
 
 #pragma mark - Pseudo fullscreen (long press Play/Pause)
@@ -788,26 +838,58 @@ static UIColor *kTextColor(void) {
     if (self.pseudoFullscreenActive) {
         [self exitPseudoFullscreen];
     } else {
-        [self enterPseudoFullscreen];
+        [self enterPseudoFullscreenAndRememberChrome];
     }
 }
 
-- (void)enterPseudoFullscreen {
+#pragma mark - Pseudo fullscreen: apply the page-side styling only
+
+// Returns the JS result string ('ok' / 'iframe' / 'no-video') and does not touch the chrome.
+- (NSString *)applyPseudoFullscreenStyling {
     BrowserWebView *webView = self.webview;
     if (webView == nil) {
+        return @"no-webview";
+    }
+    NSString *result = [webView stringByEvaluatingJavaScriptFromString:[self browserPseudoFullscreenEnterScript]];
+    NSLog(@"[PseudoFullscreen] style result=%@", result);
+    return result ?: @"";
+}
+
+// Enter initiated by a remote-key shortcut: remember the previous chrome/cursor state so the
+// same shortcut can restore it.
+- (void)enterPseudoFullscreenAndRememberChrome {
+    if (self.pseudoFullscreenActive) {
         return;
     }
-
-    NSString *result = [webView stringByEvaluatingJavaScriptFromString:[self browserPseudoFullscreenEnterScript]];
-    NSLog(@"[PseudoFullscreen] enter result=%@", result);
-
-    self.pseudoFullscreenActive = YES;
     self.pseudoFullscreenTopBarWasVisible = self.viewModel.topNavigationBarVisible;
     self.pseudoFullscreenCursorModeWasEnabled = self.remoteInputController.cursorModeEnabled;
+    self.pseudoFullscreenActive = YES;
+    self.pseudoFullscreenURLString = [self.webview.request.URL absoluteString];
+
+    [self applyPseudoFullscreenStyling];
+
+    // Keep the self-drawn cursor above the web content so it stays visible and tracking.
+    [self.view bringSubviewToFront:self.remoteInputController.cursorView];
+
+    // Fullscreen playback needs a pointer: force cursor mode on while it lasts.
+    if (!self.remoteInputController.cursorModeEnabled) {
+        [self.remoteInputController setCursorModeEnabled:YES];
+    }
 
     if (self.viewModel.topNavigationBarVisible) {
         [self browserHideTopNav];
     }
+}
+
+// Enter requested by the page itself (its own fullscreen button). The page called
+// requestFullscreen; we neutralised that and restyle here instead, so no native container is
+// created and the app chrome can actually hide.
+- (void)enterPseudoFullscreenFromPage {
+    if (self.pseudoFullscreenActive) {
+        [self applyPseudoFullscreenStyling];
+        return;
+    }
+    [self enterPseudoFullscreenAndRememberChrome];
 }
 
 - (void)exitPseudoFullscreen {
@@ -819,10 +901,17 @@ static UIColor *kTextColor(void) {
 
     self.pseudoFullscreenActive = NO;
 
+    // Restore the cursor mode the user had before going fullscreen.
+    if (!self.pseudoFullscreenCursorModeWasEnabled && self.remoteInputController.cursorModeEnabled) {
+        [self.remoteInputController setCursorModeEnabled:NO];
+    }
+    self.pseudoFullscreenCursorModeWasEnabled = NO;
+
     if (self.pseudoFullscreenTopBarWasVisible && !self.viewModel.topNavigationBarVisible) {
         [self browserShowTopNav];
     }
     self.pseudoFullscreenTopBarWasVisible = NO;
+    self.pseudoFullscreenURLString = nil;
 }
 
 - (NSString *)browserRemoteInputControllerHoverStateAtCursorPoint:(CGPoint)point {
@@ -862,12 +951,27 @@ static UIColor *kTextColor(void) {
 - (void)webViewDidStartLoad:(id)webView {
     [self.tabCoordinator webViewDidStartLoad:webView];
 
+    // Only leave pseudo fullscreen when the top-level document actually changed. A subresource
+    // or fragment navigation must not resurrect the chrome mid-playback (that is exactly the
+    // "fullscreen still shows the address bar" symptom).
     if (self.pseudoFullscreenActive) {
-        self.pseudoFullscreenActive = NO;
-        BOOL shouldRestoreTopBar = self.pseudoFullscreenTopBarWasVisible && !self.viewModel.topNavigationBarVisible;
-        self.pseudoFullscreenTopBarWasVisible = NO;
-        if (shouldRestoreTopBar) {
-            [self browserShowTopNav];
+        NSString *currentURLString = [[(BrowserWebView *)webView request].URL absoluteString];
+        BOOL samePage = (currentURLString.length > 0) &&
+                        [currentURLString isEqualToString:self.pseudoFullscreenURLString];
+        if (!samePage) {
+            NSLog(@"[PseudoFullscreen] document changed (%@), leaving pseudo fullscreen",
+                  currentURLString ?: @"(nil)");
+            self.pseudoFullscreenActive = NO;
+            BOOL shouldRestoreTopBar = self.pseudoFullscreenTopBarWasVisible && !self.viewModel.topNavigationBarVisible;
+            self.pseudoFullscreenTopBarWasVisible = NO;
+            self.pseudoFullscreenURLString = nil;
+            if (!self.pseudoFullscreenCursorModeWasEnabled && self.remoteInputController.cursorModeEnabled) {
+                [self.remoteInputController setCursorModeEnabled:NO];
+            }
+            self.pseudoFullscreenCursorModeWasEnabled = NO;
+            if (shouldRestoreTopBar) {
+                [self browserShowTopNav];
+            }
         }
     }
 }
