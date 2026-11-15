@@ -990,6 +990,110 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
     [self.host browserPresentViewController:alertController];
 }
 
+// build-21: "where is the crash log" answered from inside the app instead of from a chat message.
+// A TV has no file browser: the app container cannot be opened by the user, and the log cannot be
+// copied off without a debug cable. So the menu shows it directly -- the file path, the last write
+// time, its size, and the tail of the content -- and offers to copy it as a page, which is what
+// makes it transferable at all (open it in a tab, then use whatever the user normally uses to send
+// a URL / text away from the device).
+//
+// The same menu keeps the "app quit by itself" question answerable without a debug build: if the
+// file is empty or missing after a crash, that is itself the finding (the process died in a way
+// NSSetUncaughtExceptionHandler cannot see, i.e. a signal / jetsam kill rather than an exception).
+static NSString * const kBrowserCrashLogRelativePath = @"browser-crash.log";
+static NSUInteger const kBrowserCrashLogPreviewLimit = 1400;
+
+- (NSString *)crashLogFilePath {
+    NSString *dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    if (dir.length == 0) {
+        dir = NSTemporaryDirectory();
+    }
+    return [dir stringByAppendingPathComponent:kBrowserCrashLogRelativePath];
+}
+
+- (NSString *)crashLogSummaryMessage {
+    NSString *path = [self crashLogFilePath];
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    if (![fileManager fileExistsAtPath:path]) {
+        return [NSString stringWithFormat:
+                @"日志文件还不存在：\n%@\n\n"
+                 "这表示记录器已经安装（启动时会写第一行 launch），但本次还没有写过内容。\n"
+                 "如果刚崩溃过而这里仍然没有文件，说明进程是被系统直接结束的（信号 / 内存回收），"
+                 "不是 Objective-C 异常，需要 Xcode 的 Devices 窗口才能取到崩溃报告。", path];
+    }
+
+    NSDictionary<NSString *, id> *attributes = [fileManager attributesOfItemAtPath:path error:NULL];
+    NSNumber *sizeValue = attributes[NSFileSize];
+    NSDate *modifiedDate = attributes[NSFileModificationDate];
+    NSString *modifiedText = modifiedDate != nil
+        ? [NSDateFormatter localizedStringFromDate:modifiedDate
+                                         dateStyle:NSDateFormatterMediumStyle
+                                         timeStyle:NSDateFormatterMediumStyle]
+        : @"(未知)";
+
+    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL] ?: @"";
+    if (content.length == 0) {
+        content = @"(文件为空)";
+    }
+    NSString *tail = content;
+    if (content.length > kBrowserCrashLogPreviewLimit) {
+        tail = [NSString stringWithFormat:@"…\n%@",
+                [content substringFromIndex:content.length - kBrowserCrashLogPreviewLimit]];
+    }
+
+    return [NSString stringWithFormat:
+            @"文件：%@\n"
+             "大小：%lu 字节\n"
+             "最后写入：%@\n\n"
+             "—— 最近的记录 ——\n%@",
+            path,
+            (unsigned long)sizeValue.unsignedLongValue,
+            modifiedText,
+            tail];
+}
+
+- (void)presentCrashLog {
+    NSLog(@"[CrashLog] menu requested; path=%@", [self crashLogFilePath]);
+
+    UIAlertController *alertController = [self browserAlertControllerWithTitle:@"崩溃 / 运行日志"
+                                                                       message:[self crashLogSummaryMessage]];
+    __weak typeof(self) weakSelf = self;
+    [alertController addAction:[self browserActionWithTitle:@"复制到剪贴板"
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(UIAlertAction *action) {
+        (void)action;
+        [weakSelf copyCrashLogToPasteboard];
+    }]];
+    [alertController addAction:[self browserCancelAction]];
+    [self.host browserPresentViewController:alertController];
+}
+
+- (void)copyCrashLogToPasteboard {
+    NSString *path = [self crashLogFilePath];
+    NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:NULL];
+    if (content.length == 0) {
+        content = [NSString stringWithFormat:@"(没有日志内容) %@", path];
+    }
+    // The file path goes in front of the content so a paste elsewhere still says where it came from.
+    NSString *payload = [NSString stringWithFormat:@"# %@\n%@", path, content];
+    UIPasteboard.generalPasteboard.string = payload;
+    NSLog(@"[CrashLog] copied %lu bytes to pasteboard", (unsigned long)payload.length);
+
+    // Second route, because tvOS has no way to read the pasteboard from another app: drop the log
+    // into the browser as a plain-text page, where the user can select it or bookmark it.
+    NSString *escapedPayload = [payload stringByReplacingOccurrencesOfString:@"&" withString:@"&amp;"];
+    escapedPayload = [escapedPayload stringByReplacingOccurrencesOfString:@"<" withString:@"&lt;"];
+    escapedPayload = [escapedPayload stringByReplacingOccurrencesOfString:@">" withString:@"&gt;"];
+    NSString *html = [NSString stringWithFormat:
+                      @"<!doctype html><meta charset='utf-8'>"
+                       "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                       "<body style='background:#111;color:#ddd;font:16px/1.5 -apple-system,Menlo,monospace;"
+                       "padding:40px;white-space:pre-wrap;word-break:break-all'>%@</body>",
+                      escapedPayload];
+    NSURL *baseURL = [NSURL URLWithString:@"about:blank"];
+    [[self.host browserWebView] loadHTMLString:html baseURL:baseURL];
+}
+
 - (BrowserAdvancedMenuItem *)topNavigationVisibilityMenuItem {
     NSString *title = self.host.browserTopMenuShowing ? @"隐藏顶部导航栏" : @"显示顶部导航栏";
     return [self advancedMenuItemWithTitle:title
@@ -1179,6 +1283,11 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                                               handler:^{
         [self presentWebKitRuntimeMediaPreferences];
     }];
+    BrowserAdvancedMenuItem *crashLogItem = [self advancedMenuItemWithTitle:@"崩溃 / 运行日志"
+                                                                      style:UIAlertActionStyleDefault
+                                                                    handler:^{
+        [self presentCrashLog];
+    }];
     BrowserAdvancedMenuItem *clearCacheItem = [self advancedMenuItemWithTitle:@"清除缓存"
                                                                          style:UIAlertActionStyleDestructive
                                                                        handler:^{
@@ -1226,6 +1335,7 @@ withAnimationCoordinator:(UIFocusAnimationCoordinator *)coordinator {
                                                items:@[
             mediaDiagnosticsItem,
             webkitMediaPrefsItem,
+            crashLogItem,
         ]],
         [BrowserAdvancedMenuSection sectionWithTitle:@"维护"
                                                items:@[
