@@ -49,8 +49,6 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
 @property (nonatomic, readwrite) UIImageView *cursorView;
 @property (nonatomic, readwrite) UIPanGestureRecognizer *manualScrollPanRecognizer;
 @property (nonatomic, readwrite) UITapGestureRecognizer *playPauseDoubleTapRecognizer;
-@property (nonatomic, readwrite) UILongPressGestureRecognizer *playPauseLongPressRecognizer;
-@property (nonatomic, readwrite) UILongPressGestureRecognizer *menuLongPressRecognizer;
 @property (nonatomic, readwrite, getter=isCursorModeEnabled) BOOL cursorModeEnabled;
 @property (nonatomic) CGPoint lastTouchLocation;
 @property (nonatomic) CADisplayLink *manualScrollDisplayLink;
@@ -88,16 +86,6 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
         _playPauseDoubleTapRecognizer.numberOfTapsRequired = 2;
         _playPauseDoubleTapRecognizer.allowedPressTypes = @[@(UIPressTypePlayPause)];
         [rootView addGestureRecognizer:_playPauseDoubleTapRecognizer];
-
-        _playPauseLongPressRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handlePlayPauseLongPress:)];
-        _playPauseLongPressRecognizer.minimumPressDuration = 0.6;
-        _playPauseLongPressRecognizer.allowedPressTypes = @[@(UIPressTypePlayPause)];
-        [rootView addGestureRecognizer:_playPauseLongPressRecognizer];
-
-        _menuLongPressRecognizer = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMenuLongPress:)];
-        _menuLongPressRecognizer.minimumPressDuration = 0.6;
-        _menuLongPressRecognizer.allowedPressTypes = @[@(UIPressTypeMenu)];
-        [rootView addGestureRecognizer:_menuLongPressRecognizer];
 
         _manualScrollPanRecognizer = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handleManualScrollPan:)];
         _manualScrollPanRecognizer.allowedTouchTypes = @[ @(UITouchTypeIndirect) ];
@@ -266,48 +254,40 @@ static NSString *BrowserPressPhaseString(UIPressPhase phase) {
     [self.host browserRemoteInputControllerHandleAdvancedMenuPress];
 }
 
-// Long press Play/Pause => toggle pseudo fullscreen for the playing video.
-// Detected with a UILongPressGestureRecognizer because GCEventViewController does not
-// reliably deliver the PlayPause UIPressPhaseBegan to pressesBegan:.
-- (void)handlePlayPauseLongPress:(UILongPressGestureRecognizer *)sender {
-    if (sender.state != UIGestureRecognizerStateBegan) {
-        return;
-    }
+// Long press Play/Pause (pseudo fullscreen) and long press Menu (favorites) are detected in the
+// UIApplication sendEvent: bridge: GCEventViewController hands those buttons to the GameController
+// framework, so no UILongPressGestureRecognizer ever fires for them. The bridge posts
+// BrowserGlobalLongPressNotification, routed to here.
+- (void)handleGlobalLongPressType:(UIPressType)type {
     if ([self.host browserRemoteInputControllerTopBarFocusActive]) {
+        NSLog(@"[LongPress] ignored type=%@ (top bar focused)", BrowserPressTypeString(type));
         return;
     }
     if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
+        NSLog(@"[LongPress] ignored type=%@ (tab overview visible)", BrowserPressTypeString(type));
         return;
     }
     if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
+        NSLog(@"[LongPress] ignored type=%@ (alert presented)", BrowserPressTypeString(type));
         return;
     }
-    NSLog(@"[InputTrace][Root] long press PlayPause -> pseudo fullscreen");
-    self.playPauseLongPressConsumed = YES;
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
-    [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
-    [self.host browserRemoteInputControllerHandlePseudoFullscreenPress];
-}
 
-// Long press Menu => favorites / bookmark switcher (single Menu press stays "back").
-- (void)handleMenuLongPress:(UILongPressGestureRecognizer *)sender {
-    if (sender.state != UIGestureRecognizerStateBegan) {
+    if (type == UIPressTypePlayPause) {
+        NSLog(@"[LongPress] PlayPause -> pseudo fullscreen");
+        self.playPauseLongPressConsumed = YES;
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
+        [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
+        [self.host browserRemoteInputControllerHandlePseudoFullscreenPress];
         return;
     }
-    if ([self.host browserRemoteInputControllerTopBarFocusActive]) {
-        return;
+
+    if (type == UIPressTypeMenu) {
+        NSLog(@"[LongPress] Menu -> favorites");
+        self.menuLongPressConsumed = YES;
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
+        [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
+        [self.host browserRemoteInputControllerHandleFavoritesPress];
     }
-    if ([self.host browserRemoteInputControllerTabOverviewVisible]) {
-        return;
-    }
-    if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
-        return;
-    }
-    NSLog(@"[InputTrace][Root] long press Menu -> favorites");
-    self.menuLongPressConsumed = YES;
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(clearLongPressConsumedFlags) object:nil];
-    [self performSelector:@selector(clearLongPressConsumedFlags) withObject:nil afterDelay:2.0];
-    [self.host browserRemoteInputControllerHandleFavoritesPress];
 }
 
 - (void)clearLongPressConsumedFlags {
@@ -378,6 +358,10 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
 
 - (BOOL)canMoveCursorWithArrows {
     if (!self.cursorModeEnabled) {
+        return NO;
+    }
+    // In pseudo fullscreen the arrows are playback controls, not cursor controls.
+    if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
         return NO;
     }
     if ([self.host browserRemoteInputControllerPresentedViewController] != nil) {
@@ -491,14 +475,43 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
 
 // Entry point used by the UIApplication sendEvent: bridge. tvOS routes arrow presses to the
 // focus engine first, so pressesBegan: alone is not a reliable source for them.
+// In pseudo fullscreen the horizontal arrows become seek controls and vertical arrows reveal /
+// hide the playback HUD, so the same remote drives playback instead of the cursor.
 - (void)handleGlobalArrowPressType:(UIPressType)type began:(BOOL)began {
     if (![self isArrowPressType:type]) {
         return;
     }
+
+    if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
+        [self handlePseudoFullscreenArrowPressType:type began:began];
+        return;
+    }
+
     if (began) {
         [self handleArrowPressBegan:type];
     } else {
         [self handleArrowPressEnded:type];
+    }
+}
+
+- (void)handlePseudoFullscreenArrowPressType:(UIPressType)type began:(BOOL)began {
+    switch (type) {
+        case UIPressTypeLeftArrow:
+            [self.host browserRemoteInputControllerSeekBySeconds:-10.0 began:began];
+            return;
+        case UIPressTypeRightArrow:
+            [self.host browserRemoteInputControllerSeekBySeconds:10.0 began:began];
+            return;
+        case UIPressTypeUpArrow:
+        case UIPressTypeDownArrow:
+            // Show/hide the timecode HUD; only on press-down so a hold does not flicker.
+            if (began) {
+                NSLog(@"[InputTrace][Root] fullscreen %@ -> toggle playback HUD", BrowserPressTypeString(type));
+                [self.host browserRemoteInputControllerTogglePlaybackHUD];
+            }
+            return;
+        default:
+            return;
     }
 }
 
@@ -566,6 +579,10 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
     }
 
     if ([self isArrowPressType:press.type]) {
+        if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
+            // Already handled through the sendEvent: bridge (seek / HUD). Do not move the cursor.
+            return YES;
+        }
         if ([self handleArrowPressEnded:press.type]) {
             return YES;
         }
@@ -617,6 +634,12 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
 
     if (press.type == UIPressTypeSelect) {
         self.lastDirectSelectPressTimestamp = CACurrentMediaTime();
+        if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
+            // Fullscreen: a click reveals the playback HUD instead of clicking the page.
+            NSLog(@"[InputTrace][Root] fullscreen Select -> toggle playback HUD");
+            [self.host browserRemoteInputControllerTogglePlaybackHUD];
+            return YES;
+        }
         [self handleSelectPressEnded];
         return YES;
     }
@@ -637,6 +660,12 @@ static NSInteger const kBrowserCursorArrowMaxRepeats = 60;
         return YES;
     }
     if (press.type == UIPressTypePlayPause) {
+        // In fullscreen a single Play/Pause press controls playback instead of opening the URL sheet.
+        if ([self.host browserRemoteInputControllerPseudoFullscreenActive]) {
+            NSLog(@"[InputTrace][Root] fullscreen PlayPause -> toggle playback");
+            [self.host browserRemoteInputControllerTogglePlaybackPlayState];
+            return YES;
+        }
         [self.host browserRemoteInputControllerHandlePlayPausePress];
         return YES;
     }
